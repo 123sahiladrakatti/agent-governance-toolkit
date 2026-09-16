@@ -1,0 +1,12 @@
+# Two-agent healthcare intake system with baseline runtime governance.
+# Verified with crewai==1.15.21 and agent-control-specification==0.3.1b1
+# on Python 3.12. CrewAI 1.x brings its own OpenAI-compatible client, which is
+# what talks to Ollama.
+crewai>=1.15,<2.0
+
+# Baseline governance: ACS runtime + its bundled Rego engine. Single extra
+# dependency (pyyaml), no conflict with crewai.
+# Rego policies are evaluated via the `opa` CLI, which must be on PATH:
+#   winget install open-policy-agent.opa     (Windows)
+#   brew install opa                         (macOS)
+agent-control-specification>=0.3.1b1,<0.4

@@ -1,4 +1,5 @@
-agent-framework==1.5.0
+agent-framework>=1.5.0
 agent-os-kernel==3.2.2
 agentmesh-platform==3.2.2
 agent-sre==3.2.2
+agent-control-specification>=0.3.1b1,<0.4

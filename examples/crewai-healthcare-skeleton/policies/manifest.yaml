@@ -1,0 +1,59 @@
+agent_control_specification_version: "0.3.1-beta"
+metadata:
+  name: crewai-healthcare-baseline
+  version: "1.0"
+extends: []
+policies:
+  healthcare_phi:
+    type: rego
+    bundle: .
+    query: data.agt.examples.crewai_healthcare.result
+intervention_points:
+  # The task handed to the Intake Agent at the start of a turn.
+  input:
+    policy_target: $.input.body
+    policy:
+      id: healthcare_phi
+  # Every tool call, including CrewAI's delegate_work_to_coworker.
+  pre_tool_call:
+    policy_target: $.tool_call.args
+    policy_target_kind: tool_args
+    tool_name_from: $.tool_call.name
+    policy:
+      id: healthcare_phi
+  # Every tool result, including what the Records Agent sends back.
+  post_tool_call:
+    policy_target: $.tool_result.value
+    policy_target_kind: tool_result
+    tool_name_from: $.tool_call.name
+    policy:
+      id: healthcare_phi
+  # The Intake Agent's final answer for the turn.
+  output:
+    policy_target: $.response.content
+    policy:
+      id: healthcare_phi
+# ACS rejects a tool-call evaluation for a tool it does not know
+# (reason: runtime_error:tool_unknown), so every callable name has to be
+# declared here -- including the two delegation tools CrewAI injects itself.
+tools:
+  get_patient_demographics:
+    type: Tool
+    id: get_patient_demographics
+    clearance: internal
+  lookup_patient_record:
+    type: Tool
+    id: lookup_patient_record
+    clearance: internal
+  get_schedule:
+    type: Tool
+    id: get_schedule
+    clearance: internal
+  delegate_work_to_coworker:
+    type: Tool
+    id: delegate_work_to_coworker
+    clearance: internal
+  ask_question_to_coworker:
+    type: Tool
+    id: ask_question_to_coworker
+    clearance: internal
