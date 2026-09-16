@@ -1,0 +1,14 @@
+{
+  "goal": "Prepare a safe patient-intake summary",
+  "last_turn": 6,
+  "total_handoffs": 18,
+  "recent_tasks": [
+    "Prepare a safe patient-intake summary",
+    "Prepare a safe patient-intake summary",
+    "Prepare a safe patient-intake summary"
+  ],
+  "checkpoints": [
+    5,
+    6
+  ]
+}

@@ -13,6 +13,7 @@ integration patterns in Python and .NET.
 | 04 | [IT Helpdesk](./04-it-helpdesk/) | Destructive shell requests |
 | 05 | [DevOps Deploy](./05-devops-deploy/) | Destructive deployment requests |
 | 06 | [.NET Extension Validation](./06-dotnet-extension-validation/dotnet/) | Shared .NET extension |
+| 07 | [AML Runtime Governance](./07-aml-runtime-governance/) | Record-relative behavioral drift |
 
 ## Python
 

@@ -5,7 +5,6 @@
 from pathlib import Path
 import asyncio
 import re
-
 from agent_control_specification import AgentControl
 
 

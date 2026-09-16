@@ -1,0 +1,17 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+agent_control_specification_version: 0.3.1-beta
+metadata:
+  name: healthcare-multi-agent-governance
+  version: "1.0"
+extends: []
+policies:
+  multi_agent_handoff:
+    type: rego
+    bundle: .
+    query: data.agt.examples.maf.multi_agent.result
+intervention_points:
+  pre_tool_call:
+    policy_target: $.tool_call.args
+    policy:
+      id: multi_agent_handoff
