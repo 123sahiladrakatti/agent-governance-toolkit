@@ -12,6 +12,9 @@ for reference and the 2-agent path; the chain checkers add multi-hop attribution
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
+import sys
+from types import SimpleNamespace
 
 from domain import (
     AgentAction,
@@ -24,6 +27,71 @@ from domain import (
     SecurityCheck,
     recompute_structuring,
 )
+
+
+AML_POLICY = """
+{"apiVersion":"governance.toolkit/v1","version":"1.0","name":"aml-runtime-chain","description":"Explicit authorization and post-run review policy for the AML chain.","agents":["*"],"scope":"global","default_action":"deny","rules":[{"name":"allow-authorized-chain-hop","description":"Allow only actions explicitly present in the agent delegation.","stage":"pre_tool","condition":"action.authorized","action":"allow","priority":100},{"name":"require-review-for-governance-failure","description":"A chain that fails record-relative governance requires human review.","stage":"post_tool","condition":"governance.failed","action":"require_approval","priority":100},{"name":"allow-record-relative-governance-pass","description":"Allow a chain whose final outcome matches the original records.","stage":"post_tool","condition":"governance.passed","action":"allow","priority":50}]}
+"""
+
+
+class ToolkitGovernanceAdapter:
+    """Apply Agent Governance Toolkit policy and append-only audit logging."""
+
+    def __init__(self, policy_text: str = AML_POLICY) -> None:
+        toolkit = None
+        try:
+            from agentmesh.governance import AuditLog, PolicyEngine
+            toolkit = (AuditLog, PolicyEngine)
+        except ImportError as exc:
+            source_root = Path(__file__).resolve().parents[3]
+            local_source = source_root / "agent-governance-python" / "agent-mesh" / "src"
+            if local_source.is_dir():
+                sys.path.insert(0, str(local_source))
+                try:
+                    from agentmesh.governance import AuditLog, PolicyEngine
+                    toolkit = (AuditLog, PolicyEngine)
+                except ImportError:
+                    pass
+
+        self.engine = None
+        self.audit = []
+        if toolkit is not None:
+            audit_log, policy_engine = toolkit
+            self.engine = policy_engine(conflict_strategy="deny_overrides")
+            self.engine.load_json(policy_text)
+            self.audit = audit_log()
+
+    def evaluate(
+        self,
+        agent: str,
+        action: str,
+        context: dict[str, object],
+        stage: str,
+        resource: str,
+    ):
+        if self.engine is None:
+            # Keep the standalone demo usable with its original Streamlit
+            # interpreter; the full toolkit path is used when installed.
+            allowed = (
+                bool(context.get("action", {}).get("authorized"))
+                if stage == "pre_tool"
+                else bool(context.get("governance", {}).get("passed"))
+            )
+            decision = SimpleNamespace(
+                allowed=allowed,
+                action="allow" if allowed else ("require_approval" if stage == "post_tool" else "deny"),
+            )
+            self.audit.append({"agent": agent, "action": action, "resource": resource, "decision": decision.action})
+            return decision
+
+        decision = self.engine.evaluate(agent, context, stage=stage)
+        self.audit.log(
+            event_type="policy_evaluation", agent_did=agent, action=action,
+            resource=resource, data=context,
+            outcome="success" if decision.allowed else "denied",
+            policy_decision=decision.action, policy_version="aml-runtime-chain@1.0",
+        )
+        return decision
 
 
 # ---------------------------------------------------------------------------
@@ -65,10 +133,28 @@ class SecurityLane:
     """Per-hop authorization. This is the 'security intact' view: every hop is
     checked in isolation against what that agent was permitted to do."""
 
-    def check(self, chain: tuple[ChainStep, ...]) -> tuple[SecurityCheck, ...]:
+    def __init__(self, toolkit: ToolkitGovernanceAdapter | None = None) -> None:
+        self.toolkit = toolkit
+
+    def check(self, chain: tuple[ChainStep, ...], alert_id: str = "unknown") -> tuple[SecurityCheck, ...]:
         checks = []
         for step in chain:
             permitted = step.action_type in step.allowed_actions
+            if self.toolkit is not None:
+                policy = self.toolkit.evaluate(
+                    agent=step.agent,
+                    action=step.action_type,
+                    context={
+                        "action": {
+                            "type": "aml_chain_handoff",
+                            "authorized": permitted,
+                        },
+                        "agent": {"step": step.step_index},
+                    },
+                    stage="pre_tool",
+                    resource=f"aml-alert:{alert_id}",
+                )
+                permitted = permitted and policy.allowed
             reason = (f"{step.agent} performed '{step.action_type}', which is within its permitted actions."
                       if permitted else
                       f"{step.agent} performed '{step.action_type}', outside its permitted actions.")
@@ -161,12 +247,20 @@ class ChainMonitor:
 
     def __init__(self, context_window: int = 8, checkpoint_interval: int = 5) -> None:
         self.metrics = ChainSessionMetrics(context_window, checkpoint_interval)
-        self.security = SecurityLane()
+        self.toolkit = ToolkitGovernanceAdapter()
+        self.security = SecurityLane(self.toolkit)
         self.governance = ChainGovernance()
 
     def evaluate(self, outcome: ChainOutcome) -> ChainReview:
-        sec = self.security.check(outcome.chain)
+        sec = self.security.check(outcome.chain, outcome.alert.alert_id)
         gov = self.governance.check(outcome.alert, outcome.chain)
+        self.toolkit.evaluate(
+            agent="aml-governance-monitor",
+            action="aml_chain_review",
+            context={"governance": {"failed": not gov.passed, "passed": gov.passed}},
+            stage="post_tool",
+            resource=f"aml-alert:{outcome.alert.alert_id}",
+        )
         m = self.metrics
         m.turns += 1
         m.retained_alerts.append(outcome.alert.alert_id)
