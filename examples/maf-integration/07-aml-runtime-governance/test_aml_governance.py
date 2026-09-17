@@ -2,7 +2,7 @@ import unittest
 
 from agent_sim import generate_alerts, investigate, run_session
 from domain import recompute_structuring
-from governance import EnhancedGovernance, RegularGovernance
+from governance import EnhancedGovernance, RegularGovernance, StatefulGovernanceMonitor
 
 class AmlGovernanceTests(unittest.TestCase):
     def test_star_case_is_record_relative_and_contrasting(self):
@@ -32,6 +32,16 @@ class AmlGovernanceTests(unittest.TestCase):
     def test_no_hidden_expected_disposition_labels(self):
         alert = generate_alerts(1, seed=7)[0]
         self.assertFalse(hasattr(alert, "expected_disposition"))
+
+    def test_stateful_monitor_retains_bounded_context_and_checkpoints(self):
+        monitor = StatefulGovernanceMonitor(context_window=8, checkpoint_interval=5)
+        for alert, action in run_session(40, seed=7):
+            monitor.evaluate(action, alert)
+        self.assertEqual(monitor.metrics.turns, 40)
+        self.assertEqual(monitor.metrics.retained_context, 8)
+        self.assertEqual(monitor.metrics.checkpoints, [5, 10, 15, 20, 25, 30, 35, 40])
+        self.assertEqual(monitor.metrics.regular_missed, 3)
+        self.assertEqual(monitor.metrics.drift_score, 6)
 
 if __name__ == "__main__":
     unittest.main()
