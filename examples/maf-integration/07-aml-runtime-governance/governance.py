@@ -1,26 +1,151 @@
-"""Cheap deterministic runtime governance lanes for the AML demo."""
+"""Cheap deterministic runtime governance lanes for the AML agent demo.
+
+Two lanes, both LLM-free and record-relative:
+  * Security lane   - was each hop authorized? (permission only)
+  * Governance lane - is the chain's outcome correct vs the original records,
+                      and if not, which agent originated the error?
+
+The single-decision checkers (RegularGovernance / EnhancedGovernance) are kept
+for reference and the 2-agent path; the chain checkers add multi-hop attribution.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from domain import AgentAction, Alert, GovernanceVerdict, recompute_structuring
+from domain import (
+    AgentAction,
+    Alert,
+    ChainAttribution,
+    ChainOutcome,
+    ChainReview,
+    ChainStep,
+    GovernanceVerdict,
+    SecurityCheck,
+    recompute_structuring,
+)
+
+
+# ---------------------------------------------------------------------------
+# Single-decision lanes (unchanged; used by the 2-agent path)
+# ---------------------------------------------------------------------------
+class RegularGovernance:
+    """Check permission and access only; intentionally ignores semantic correctness."""
+
+    def check(self, action: AgentAction, alert: Alert) -> GovernanceVerdict:
+        if action.action_type not in action.delegation.allowed_actions:
+            return GovernanceVerdict(False, "mis-delegation", action.responsible_agent, action.step, "Tool/action is outside the triage delegation.", {"allowed_actions": sorted(action.delegation.allowed_actions), "action_type": action.action_type})
+        if action.delegation.data_access_scope != "portfolio":
+            return GovernanceVerdict(False, "mis-delegation", action.responsible_agent, action.step, "Account data is outside the delegated access scope.", {"scope": action.delegation.data_access_scope})
+        return GovernanceVerdict(True, None, action.responsible_agent, action.step, "Authorized action and portfolio data access.", {"action_type": action.action_type})
+
+
+class EnhancedGovernance:
+    """Recompute record-relative truth and compare it with the permitted action."""
+
+    def check(self, action: AgentAction, alert: Alert) -> GovernanceVerdict:
+        actual = recompute_structuring(alert)
+        if action.acted_account_id != alert.account_id:
+            return GovernanceVerdict(False, "wrong-target", action.responsible_agent, action.step, f"Agent acted on {action.acted_account_id}; alert belongs to {alert.account_id}.", {})
+        if action.action_type not in action.delegation.allowed_actions:
+            return GovernanceVerdict(False, "mis-delegation", action.responsible_agent, action.step, f"Agent recorded {action.action_type}; triage delegated only {', '.join(sorted(action.delegation.allowed_actions))}.", {})
+        if tuple(action.claimed_amounts) != actual.qualifying_amounts or action.claimed_threshold != actual.threshold:
+            reason = f"Agent claimed amounts {list(action.claimed_amounts)}; record amounts are {list(actual.qualifying_amounts)}."
+            return GovernanceVerdict(False, "semantic-drift", action.responsible_agent, action.step, reason, {})
+        expected = "FILE_SAR" if actual.is_structuring else "CLEAR"
+        if action.disposition != expected or (action.disposition == "FILE_SAR" and not action.sar_record_id) or (action.disposition == "CLEAR" and actual.is_structuring):
+            return GovernanceVerdict(False, "false-completion", action.responsible_agent, action.step, f"Agent reported {action.disposition_status}, but records recompute to {expected}.", {})
+        return GovernanceVerdict(True, None, action.responsible_agent, action.step, f"Record-relative evidence supports {expected}.", {})
+
+
+# ---------------------------------------------------------------------------
+# Chain lanes (multi-hop: security per hop + governance with origin attribution)
+# ---------------------------------------------------------------------------
+class SecurityLane:
+    """Per-hop authorization. This is the 'security intact' view: every hop is
+    checked in isolation against what that agent was permitted to do."""
+
+    def check(self, chain: tuple[ChainStep, ...]) -> tuple[SecurityCheck, ...]:
+        checks = []
+        for step in chain:
+            permitted = step.action_type in step.allowed_actions
+            reason = (f"{step.agent} performed '{step.action_type}', which is within its permitted actions."
+                      if permitted else
+                      f"{step.agent} performed '{step.action_type}', outside its permitted actions.")
+            checks.append(SecurityCheck(step.agent, step.step_index, permitted, reason))
+        return checks
+
+
+class ChainGovernance:
+    """Governance over a whole chain.
+
+    Recomputes the correct outcome from the ORIGINAL records, and if the chain's
+    final disposition contradicts it, walks the provenance backward to attribute
+    the error to the agent that first diverged from the records (the origin),
+    distinguishing it from downstream agents that merely trusted and forwarded
+    the bad value (the propagators). No LLM calls; pure record-relative arithmetic.
+    """
+
+    def check(self, alert: Alert, chain: tuple[ChainStep, ...]) -> ChainAttribution:
+        truth = recompute_structuring(alert)
+        final = chain[-1]
+        expected = "FILE_SAR" if truth.is_structuring else "CLEAR"
+
+        if final.disposition == expected:
+            return ChainAttribution(
+                passed=True, category=None, origin_agent=None, origin_step=None, propagators=(),
+                reason=(f"End-to-end outcome '{final.disposition}' matches the records: "
+                        f"${truth.aggregate:,.0f} across {truth.qualifying_count} sub-threshold deposits."),
+                record_amounts=truth.qualifying_amounts, record_aggregate=truth.aggregate,
+                is_structuring=truth.is_structuring, final_disposition=final.disposition, expected_disposition=expected,
+            )
+
+        # Outcome is wrong. Find the first hop whose used value diverged from its source of truth.
+        origin = None
+        for step in chain:
+            if step.received_from is None:
+                # The record reader: compare against the actual records.
+                if tuple(step.used_amounts) != truth.qualifying_amounts:
+                    origin = step
+                    break
+            else:
+                # A propagator: it only originates error if it altered what it received.
+                if tuple(step.used_amounts) != tuple(step.received_amounts or ()):
+                    origin = step
+                    break
+        if origin is None:
+            origin = chain[0]
+
+        propagators = tuple(step.agent for step in chain if step.step_index > origin.step_index)
+        prop_text = ", ".join(propagators) if propagators else "none"
+        reason = (
+            f"Final disposition '{final.disposition}' contradicts the records "
+            f"(recomputed ${truth.aggregate:,.0f} across {truth.qualifying_count} sub-threshold deposits, "
+            f"which requires '{expected}'). Walking the delegation chain back: {origin.agent} at step "
+            f"{origin.step_index} used {[round(x) for x in origin.used_amounts]} while the records show "
+            f"{[round(x) for x in truth.qualifying_amounts]}. Downstream agents ({prop_text}) trusted and "
+            f"forwarded this value without re-checking it."
+        )
+        return ChainAttribution(
+            passed=False, category="transitive-corruption", origin_agent=origin.agent, origin_step=origin.step_index,
+            propagators=propagators, reason=reason, record_amounts=truth.qualifying_amounts,
+            record_aggregate=truth.aggregate, is_structuring=truth.is_structuring,
+            final_disposition=final.disposition, expected_disposition=expected,
+        )
 
 
 @dataclass
-class SessionMetrics:
-    """Bounded state retained across a long-running investigation session."""
+class ChainSessionMetrics:
+    """Bounded state retained across a long-running chain session."""
 
     context_window: int = 8
     checkpoint_interval: int = 5
     turns: int = 0
     retained_alerts: list[str] = field(default_factory=list)
-    retained_accounts: list[str] = field(default_factory=list)
     checkpoints: list[int] = field(default_factory=list)
-    drift_score: int = 0
-    regular_flags: int = 0
-    enhanced_flags: int = 0
-    regular_missed: int = 0
+    security_intact_but_wrong: int = 0   # chains where every hop passed security but governance flagged
+    governance_flags: int = 0
+    security_flags: int = 0
 
     @property
     def context_pressure(self) -> float:
@@ -31,59 +156,30 @@ class SessionMetrics:
         return len(self.retained_alerts)
 
 
-class StatefulGovernanceMonitor:
-    """Evaluate each action while retaining compact state across the full run."""
+class ChainMonitor:
+    """Evaluate each chain while retaining compact state across the full run."""
 
     def __init__(self, context_window: int = 8, checkpoint_interval: int = 5) -> None:
-        self.metrics = SessionMetrics(context_window, checkpoint_interval)
-        self.regular = RegularGovernance()
-        self.enhanced = EnhancedGovernance()
+        self.metrics = ChainSessionMetrics(context_window, checkpoint_interval)
+        self.security = SecurityLane()
+        self.governance = ChainGovernance()
 
-    def evaluate(self, action: AgentAction, alert: Alert) -> tuple[GovernanceVerdict, GovernanceVerdict]:
-        regular_verdict = self.regular.check(action, alert)
-        enhanced_verdict = self.enhanced.check(action, alert)
-        metrics = self.metrics
-        metrics.turns += 1
-        metrics.retained_alerts.append(alert.alert_id)
-        metrics.retained_accounts.append(alert.account_id)
-        if len(metrics.retained_alerts) > metrics.context_window:
-            metrics.retained_alerts.pop(0)
-            metrics.retained_accounts.pop(0)
-        if metrics.turns % metrics.checkpoint_interval == 0:
-            metrics.checkpoints.append(metrics.turns)
-        if not regular_verdict.passed:
-            metrics.regular_flags += 1
-        if not enhanced_verdict.passed:
-            metrics.enhanced_flags += 1
-            metrics.drift_score += {"semantic-drift": 2, "wrong-target": 1, "mis-delegation": 1, "false-completion": 2}.get(enhanced_verdict.category, 1)
-        if regular_verdict.passed and not enhanced_verdict.passed:
-            metrics.regular_missed += 1
-        return regular_verdict, enhanced_verdict
-
-class RegularGovernance:
-    """Check permission and access only; intentionally ignores semantic correctness."""
-    def check(self, action: AgentAction, alert: Alert) -> GovernanceVerdict:
-        if action.action_type not in action.delegation.allowed_actions:
-            return GovernanceVerdict(False, "mis-delegation", action.responsible_agent, action.step, "Tool/action is outside the triage delegation.", {"allowed_actions": sorted(action.delegation.allowed_actions), "action_type": action.action_type})
-        if action.delegation.data_access_scope != "portfolio":
-            return GovernanceVerdict(False, "mis-delegation", action.responsible_agent, action.step, "Account data is outside the delegated access scope.", {"scope": action.delegation.data_access_scope})
-        return GovernanceVerdict(True, None, action.responsible_agent, action.step, "Authorized action and portfolio data access.", {"action_type": action.action_type, "data_scope": action.delegation.data_access_scope})
-
-class EnhancedGovernance:
-    """Recompute record-relative truth and compare it with the permitted action."""
-    def check(self, action: AgentAction, alert: Alert) -> GovernanceVerdict:
-        actual = recompute_structuring(alert)
-        if action.acted_account_id != alert.account_id:
-            return GovernanceVerdict(False, "wrong-target", action.responsible_agent, action.step, f"Agent acted on {action.acted_account_id}; alert belongs to {alert.account_id}.", {"alert_account": alert.account_id, "acted_account": action.acted_account_id})
-        if action.action_type not in action.delegation.allowed_actions:
-            return GovernanceVerdict(False, "mis-delegation", action.responsible_agent, action.step, f"Agent recorded {action.action_type}; triage delegated only {', '.join(sorted(action.delegation.allowed_actions))}.", {"allowed_actions": sorted(action.delegation.allowed_actions), "action_type": action.action_type})
-        if tuple(action.claimed_amounts) != actual.qualifying_amounts or action.claimed_threshold != actual.threshold:
-            mismatch = next(((claimed, recorded) for claimed, recorded in zip(action.claimed_amounts, actual.qualifying_amounts) if claimed != recorded), (None, None))
-            reason = f"Agent claimed amounts {list(action.claimed_amounts)}; record amounts are {list(actual.qualifying_amounts)}. Recomputed aggregate ${actual.aggregate:,.0f} {'≥' if actual.is_structuring else '<'} ${30_000:,.0f} structuring rule."
-            if mismatch[0] is not None:
-                reason = f"Agent used ${mismatch[0]:,.0f}; record shows ${mismatch[1]:,.0f}. " + reason
-            return GovernanceVerdict(False, "semantic-drift", action.responsible_agent, action.step, reason, {"claimed_amounts": action.claimed_amounts, "record_amounts": actual.qualifying_amounts, "claimed_threshold": action.claimed_threshold, "record_threshold": actual.threshold, "record_aggregate": actual.aggregate})
-        expected = "FILE_SAR" if actual.is_structuring else "CLEAR"
-        if action.disposition != expected or (action.disposition == "FILE_SAR" and not action.sar_record_id) or (action.disposition == "CLEAR" and actual.is_structuring):
-            return GovernanceVerdict(False, "false-completion", action.responsible_agent, action.step, f"Agent reported {action.disposition_status}, but records recompute to {expected}: {actual.qualifying_count} deposits totaling ${actual.aggregate:,.0f}.", {"reported_status": action.disposition_status, "reported_disposition": action.disposition, "recomputed_disposition": expected, "record_aggregate": actual.aggregate, "sar_record_id": action.sar_record_id})
-        return GovernanceVerdict(True, None, action.responsible_agent, action.step, f"Record-relative evidence supports {expected}: ${actual.aggregate:,.0f} across {actual.qualifying_count} qualifying deposits.", {"recomputed_disposition": expected, "record_aggregate": actual.aggregate, "record_amounts": actual.qualifying_amounts})
+    def evaluate(self, outcome: ChainOutcome) -> ChainReview:
+        sec = self.security.check(outcome.chain)
+        gov = self.governance.check(outcome.alert, outcome.chain)
+        m = self.metrics
+        m.turns += 1
+        m.retained_alerts.append(outcome.alert.alert_id)
+        if len(m.retained_alerts) > m.context_window:
+            m.retained_alerts.pop(0)
+        if m.turns % m.checkpoint_interval == 0:
+            m.checkpoints.append(m.turns)
+        all_security_passed = all(check.passed for check in sec)
+        if not all_security_passed:
+            m.security_flags += 1
+        if not gov.passed:
+            m.governance_flags += 1
+        if all_security_passed and not gov.passed:
+            m.security_intact_but_wrong += 1
+        from domain import ChainReview as _CR  # local import avoids cycle at module import
+        return _CR(outcome=outcome, security=tuple(sec), governance=gov)

@@ -1,4 +1,8 @@
-"""Domain models and deterministic AML structuring calculations."""
+"""Domain models and deterministic AML structuring calculations.
+
+Includes both the single-decision (2-agent) model and the 3-agent delegation
+chain used to demonstrate transitive corruption with origin attribution.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +17,7 @@ STRUCTURING_WINDOW_DAYS = 5
 
 Disposition = Literal["CLEAR", "ESCALATE", "FILE_SAR"]
 
+
 @dataclass(frozen=True)
 class Transaction:
     id: str
@@ -22,12 +27,14 @@ class Transaction:
     timestamp: datetime
     branch: str
 
+
 @dataclass(frozen=True)
 class CustomerProfile:
     account_id: str
     name: str
     stated_occupation: str
     expected_monthly_cash_volume: float
+
 
 @dataclass(frozen=True)
 class Alert:
@@ -37,6 +44,7 @@ class Alert:
     customer: CustomerProfile
     monitoring_rule: str
 
+
 @dataclass(frozen=True)
 class Delegation:
     sender: str
@@ -45,6 +53,7 @@ class Delegation:
     goal: str
     allowed_actions: frozenset[str]
     data_access_scope: str = "portfolio"
+
 
 @dataclass(frozen=True)
 class AgentAction:
@@ -64,6 +73,7 @@ class AgentAction:
     sar_record_id: str | None = None
     is_star_case: bool = False
     fault_label: str | None = None
+
 
 @dataclass(frozen=True)
 class StructuringResult:
@@ -100,6 +110,7 @@ def recompute_structuring(alert: Alert, threshold: float = CTR_THRESHOLD) -> Str
         is_structuring=(len(amounts) >= STRUCTURING_MIN_DEPOSITS and aggregate >= STRUCTURING_AGGREGATE and within_window),
     )
 
+
 @dataclass(frozen=True)
 class GovernanceVerdict:
     passed: bool
@@ -109,9 +120,79 @@ class GovernanceVerdict:
     reason: str
     details: dict[str, object]
 
+
 @dataclass(frozen=True)
 class AlertOutcome:
     alert: Alert
     action: AgentAction
     regular: GovernanceVerdict
     enhanced: GovernanceVerdict
+
+
+# ---------------------------------------------------------------------------
+# 3-agent delegation chain (transitive corruption + origin attribution)
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class ChainStep:
+    """One agent's hop in a delegation chain.
+
+    Each step records the value the agent *used*, the value it *received* from
+    upstream, and who it received from. This provenance is what lets governance
+    walk the chain backward and attribute a corrupted value to its origin.
+    """
+
+    agent: str
+    step_index: int              # 1-based position in the chain
+    used_amounts: tuple[float, ...]
+    used_aggregate: float
+    disposition: Disposition
+    action_type: str             # the permitted action this agent took
+    allowed_actions: frozenset[str]
+    received_from: str | None    # upstream agent trusted (None for the record reader)
+    received_amounts: tuple[float, ...] | None
+
+
+@dataclass(frozen=True)
+class ChainOutcome:
+    """Result of running one alert through the 3-agent chain."""
+
+    alert: Alert
+    chain: tuple[ChainStep, ...]
+    corrupt: bool
+    is_star_case: bool = False
+
+
+@dataclass(frozen=True)
+class SecurityCheck:
+    """Per-hop deterministic authorization result (the 'security intact' lane)."""
+
+    agent: str
+    step_index: int
+    passed: bool
+    reason: str
+
+
+@dataclass(frozen=True)
+class ChainAttribution:
+    """Governance verdict over a whole chain, with origin vs propagators."""
+
+    passed: bool
+    category: str | None
+    origin_agent: str | None
+    origin_step: int | None
+    propagators: tuple[str, ...]
+    reason: str
+    record_amounts: tuple[float, ...]
+    record_aggregate: float
+    is_structuring: bool
+    final_disposition: str
+    expected_disposition: str
+
+
+@dataclass(frozen=True)
+class ChainReview:
+    """Everything the UI needs for one chain: hops, security lane, governance lane."""
+
+    outcome: ChainOutcome
+    security: tuple[SecurityCheck, ...]
+    governance: ChainAttribution
