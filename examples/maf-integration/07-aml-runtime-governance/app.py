@@ -65,6 +65,8 @@ html, body, [class*="css"] { font-family:ui-sans-serif,system-ui,-apple-system,B
 .result { padding:1rem 1.1rem; border:1px solid var(--line); background:#fff; } .result.flag { border-color:#e4aeb2; background:var(--red-bg); }
 .status { display:inline-block; float:right; padding:.25rem .45rem; font:700 .7rem ui-monospace,SFMono-Regular,Menlo,monospace; } .status.pass { color:var(--green); background:var(--green-bg); } .status.flag { color:var(--red); background:#ffdfe1; }
 .result h3 { margin:0; font-size:1rem; } .result p { margin:.45rem 0 0; color:var(--muted); line-height:1.45; font-size:.88rem; }
+.drop-tl td { font-size:.9rem; } tr.drop-flag td { background:var(--red-bg); color:var(--red); font-weight:700; } tr.drop-close td { background:#eef3f7; color:var(--blue); font-weight:600; }
+.drop-tl td { font-size:.9rem; } tr.drop-flag td { background:var(--red-bg); color:var(--red); font-weight:700; } tr.drop-close td { background:#eef3f7; color:var(--blue); font-weight:600; }
 @media(max-width:820px){ .chain{grid-template-columns:1fr} .arrow{transform:rotate(90deg);padding:.3rem 0} .score{grid-template-columns:repeat(2,1fr)} .block-container{padding:1rem .8rem 3rem} }
 </style>
 """, unsafe_allow_html=True)
@@ -218,6 +220,104 @@ if run:
     st.session_state.reviews = reviews
     st.session_state.metrics = monitor.metrics
     progress.empty()
+
+
+
+# ===========================================================================
+# STAGE 3 - Runtime detection of a DROPPED HANDOFF (responsibility gap)
+# ---------------------------------------------------------------------------
+# Visual, animated view of governing the interaction between agents. A task
+# handed between agents is never picked up; governance flags the gap in-flight
+# (at the deadline) before the workflow falsely reports completion.
+# Self-contained module; does not touch the AGT-integrated governance.py.
+# ===========================================================================
+from handoff_governance import (
+    simulate_handoff_session,
+    RuntimeObligationMonitor,
+    gap_before_close,
+    render_flow_svg,
+    display_label,
+    DEFAULT_DEADLINE_K,
+    EVENT_ISSUED,
+    EVENT_WORKFLOW_CLOSED,
+)
+
+st.markdown('<p class="stage-tag" style="margin-top:2.2rem">Runtime detection \u00b7 governing the interaction between agents</p>', unsafe_allow_html=True)
+st.markdown('<h2 class="stage-title">A dropped handoff, caught before the workflow claims success</h2>', unsafe_allow_html=True)
+st.markdown(
+    '<p class="stage-help">One agent hands a task to the next; the next never picks it up. Because an absence raises no '
+    'event, governance tracks the expected pickup with a deadline and flags the gap the moment the deadline lapses \u2014 '
+    'in-flight, before the workflow reports the alert closed. Press play to watch the clock.</p>',
+    unsafe_allow_html=True,
+)
+
+# K slider (sensitivity: shorter = faster detection, more false positives)
+kc1, kc2 = st.columns([1, 2])
+with kc1:
+    deadline_k = st.slider("Detection deadline (steps)", 1, 6, DEFAULT_DEADLINE_K,
+                           help="How long governance waits before treating an un-accepted handoff as dropped. "
+                                "Shorter catches faster but risks flagging a merely-slow agent.")
+
+_hlog, _dropped_id = simulate_handoff_session(alert_count, seed, dropped_index=min(18, alert_count - 1))
+_hmon = RuntimeObligationMonitor(deadline_k=deadline_k)
+_hflags = _hmon.run(_hlog)
+
+# Focus the animation on the dropped alert's own step span.
+_d_events = [e for e in _hlog if e.alert_id == _dropped_id]
+_issue_step = next(e.step for e in _d_events if e.kind == EVENT_ISSUED)
+_close_step = next(e.step for e in _d_events if e.kind == EVENT_WORKFLOW_CLOSED)
+_start, _end = _issue_step - 1, _close_step
+
+if "dh_step" not in st.session_state:
+    st.session_state.dh_step = _end  # default to the final frame (shows the whole story)
+
+pc1, pc2, pc3 = st.columns([1, 1, 3])
+with pc1:
+    play = st.button("\u25b6 Play", use_container_width=True)
+with pc2:
+    reset = st.button("\u21ba Reset", use_container_width=True)
+with pc3:
+    st.session_state.dh_step = st.slider("Step", _start, _end, st.session_state.dh_step,
+                                         label_visibility="collapsed")
+
+_flag = _hflags[0] if _hflags else None
+_diagram = st.empty()
+
+def _draw(step: int) -> None:
+    svg = render_flow_svg(_hlog, _flag, step, deadline_k, _dropped_id)
+    _diagram.markdown(f'<div class="scene" style="padding:1.4rem">{svg}</div>', unsafe_allow_html=True)
+
+if reset:
+    st.session_state.dh_step = _start
+
+if play:
+    for _s in range(_start, _end + 1):
+        st.session_state.dh_step = _s
+        _draw(_s)
+        time.sleep(0.6)
+else:
+    _draw(st.session_state.dh_step)
+
+# Compact verdict strip (kept short; the diagram carries the story)
+if _flag is not None:
+    _lead = gap_before_close(_hlog, _flag)
+    v1, v2 = st.columns(2)
+    with v1:
+        st.markdown(
+            '<div class="lane miss"><p class="q">Security / AGT lane</p>'
+            '<p class="verdict">PASS</p>'
+            '<p class="body">Nothing unauthorized \u2014 the failure is a <i>missing</i> action, so a permission check has nothing to catch.</p></div>',
+            unsafe_allow_html=True,
+        )
+    with v2:
+        st.markdown(
+            f'<div class="lane catch"><p class="q">Governance lane \u00b7 alert {display_label(_dropped_id, _dropped_id)}</p>'
+            f'<p class="verdict">FLAG \u2014 responsibility gap</p>'
+            f'<p class="body">Handoff {_flag.sender} \u2192 {_flag.recipient} issued at step {_flag.opened_step}, '
+            f'never accepted by deadline (step {_flag.deadline_step}). Flagged {_lead} step(s) before the workflow closed.</p></div>',
+            unsafe_allow_html=True,
+        )
+
 
 reviews = st.session_state.reviews
 if not reviews:
