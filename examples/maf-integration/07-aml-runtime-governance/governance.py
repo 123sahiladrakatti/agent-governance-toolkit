@@ -177,6 +177,39 @@ class ChainGovernance:
         final = chain[-1]
         expected = "FILE_SAR" if truth.is_structuring else "CLEAR"
 
+        # --- New distinct fault classes (checked before the corruption/outcome check) ---
+        # 1) Wrong-target: an agent acted on an account other than the alert's.
+        for step in chain:
+            acted = getattr(step, "acted_account_id", None)
+            if acted is not None and acted != alert.account_id:
+                reason = (f"{step.agent} at step {step.step_index} acted on account {acted}, "
+                          f"but the alert belongs to {alert.account_id}. Authorized to access accounts, "
+                          f"but the wrong entity - the decision does not concern this alert.")
+                return ChainAttribution(False, "wrong-target", step.agent, step.step_index, (), reason,
+                                        truth.qualifying_amounts, truth.aggregate, truth.is_structuring,
+                                        final.disposition, expected)
+        # 2) Scope / mis-delegation: an agent took an action outside its allowed_actions.
+        #    (The security lane also catches this - the overlap is intentional.)
+        for step in chain:
+            if step.action_type not in step.allowed_actions:
+                reason = (f"{step.agent} at step {step.step_index} performed '{step.action_type}', "
+                          f"which is outside its delegated actions "
+                          f"({', '.join(sorted(step.allowed_actions))}). Action taken beyond granted authority.")
+                return ChainAttribution(False, "mis-delegation", step.agent, step.step_index, (), reason,
+                                        truth.qualifying_amounts, truth.aggregate, truth.is_structuring,
+                                        final.disposition, expected)
+        # 3) Conflict: two agents recorded contradictory dispositions for the same alert.
+        dispositions = {step.step_index: step.disposition for step in chain}
+        if len(set(dispositions.values())) > 1:
+            disagreeing = ", ".join(f"{s.agent}->{s.disposition}" for s in chain)
+            reason = (f"Agents disagree on the disposition with no reconciliation ({disagreeing}). "
+                      f"Two authorized agents reached contradictory conclusions for one alert.")
+            first_disp = chain[0].disposition
+            culprit = next((s for s in chain if s.disposition != first_disp), chain[-1])
+            return ChainAttribution(False, "conflict", culprit.agent, culprit.step_index, (), reason,
+                                    truth.qualifying_amounts, truth.aggregate, truth.is_structuring,
+                                    final.disposition, expected)
+
         if final.disposition == expected:
             return ChainAttribution(
                 passed=True, category=None, origin_agent=None, origin_step=None, propagators=(),

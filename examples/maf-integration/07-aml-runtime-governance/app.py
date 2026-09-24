@@ -319,6 +319,103 @@ if _flag is not None:
         )
 
 
+
+# ===========================================================================
+# STAGE 4 - Runtime PREVENTION: step-gated halt (detect mid-run, stop the chain)
+# ---------------------------------------------------------------------------
+# Unlike the review path (which inspects a completed chain), this runs the chain
+# one step at a time and checks after each step. On a fault it HALTS: downstream
+# agents never run, so the faulty result never reaches the step that commits harm.
+# Two intervention points: a permission GATE (scope, blocked before it runs) and
+# a behavioral HALT (corruption/wrong-target/conflict, stopped after detection).
+# ===========================================================================
+from step_gate import run_gated_session
+
+st.markdown('<p class="stage-tag" style="margin-top:2.2rem">Runtime prevention \u00b7 detect mid-run and stop the chain</p>', unsafe_allow_html=True)
+st.markdown('<h2 class="stage-title">Catching the fault mid-run and halting before harm commits</h2>', unsafe_allow_html=True)
+st.markdown(
+    '<p class="stage-help">The earlier stages <i>detect</i> faults. This one <i>prevents</i> them: the chain runs step '
+    'by step, governance checks each step as it finishes, and the moment a fault is found the chain halts \u2014 the '
+    'downstream agents never run, so the wrong decision is never committed. Pick a fault to watch it stop.</p>',
+    unsafe_allow_html=True,
+)
+
+_gated = run_gated_session(alert_count, seed)
+_halted_runs = [r for r in _gated if r.halted]
+
+_label_map = {
+    "transitive-corruption": "Misread value (corruption)",
+    "wrong-target": "Wrong account (wrong-target)",
+    "scope": "Out-of-scope action (permission)",
+    "conflict": "Contradictory decisions (conflict)",
+}
+_choices = {f"{_label_map.get(r.fault, r.fault)} \u00b7 {r.alert.alert_id}": r for r in _halted_runs}
+
+if _choices:
+    pick = st.radio("Fault to inspect", list(_choices.keys()), horizontal=True, label_visibility="collapsed")
+    r = _choices[pick]
+
+    # Build the step-cards row: executed (green) / halted (red) / blocked-at-gate (red) / not-run (grey).
+    def _card(gs) -> str:
+        status = gs.status
+        if status == "executed":
+            cls, badge, badge_cls = "hop", "EXECUTED", "sec pass"
+        elif status == "halted_after":
+            cls, badge, badge_cls = "hop origin", "HALTED HERE", "sec flag"
+        elif status == "blocked_at_gate":
+            cls, badge, badge_cls = "hop origin", "BLOCKED AT GATE", "sec flag"
+        else:  # not_run
+            cls, badge, badge_cls = "hop", "NEVER RAN", "sec"
+        greyed = ' style="opacity:.5"' if status == "not_run" else ''
+        disp = ""
+        if gs.step is not None:
+            disp = f'<div class="val">decision: <b>{gs.step.disposition}</b></div>'
+        role = {1: "reads records", 2: "builds case", 3: "files decision"}.get(gs.step_index, "")
+        return (
+            f'<div class="{cls}"{greyed}><p class="who">{gs.agent}</p>'
+            f'<p class="role">step {gs.step_index} \u00b7 {role}</p>'
+            f'{disp}'
+            f'<div class="{badge_cls}">{badge}</div></div>'
+        )
+
+    cards = f'<div class="arrow">\u2192</div>'.join(_card(gs) for gs in r.steps)
+    st.markdown(f'<div class="scene"><div class="chain">{cards}</div>'
+                f'<p style="margin:.8rem 0 0;font-size:.88rem;color:var(--muted)">'
+                f'{"Permission gate: the action was denied before it ran." if r.halt_kind == "gate" else "Behavioral halt: the faulty step ran, its output failed the check, and the chain stopped."}'
+                f'</p></div>', unsafe_allow_html=True)
+
+    # Verdict + prevention banner
+    v1, v2 = st.columns(2)
+    with v1:
+        gate_line = ("Blocked at the gate \u2014 the action never executed." if r.halt_kind == "gate"
+                     else f"Halted after step {r.halt_step_index} \u2014 detected the moment the faulty output appeared.")
+        st.markdown(
+            f'<div class="lane catch"><p class="q">Runtime governance \u00b7 {r.alert.alert_id}</p>'
+            f'<p class="verdict">HALTED \u2014 {r.category}</p>'
+            f'<p class="body">{r.reason}<br><br>{gate_line}</p></div>',
+            unsafe_allow_html=True,
+        )
+    with v2:
+        prevented = r.consequential_prevented
+        st.markdown(
+            f'<div class="lane {"catch" if prevented else "miss"}"><p class="q">Outcome</p>'
+            f'<p class="verdict" style="color:{"#176b45" if prevented else "#b12632"}">'
+            f'{"Consequential action PREVENTED" if prevented else "Not prevented"}</p>'
+            f'<p class="body">{"The filing step never ran. The wrong decision was never committed \u2014 the chain was stopped before harm." if prevented else "The harmful step had already run before detection."}</p></div>',
+            unsafe_allow_html=True,
+        )
+
+    st.markdown(
+        '<div class="takeaway"><b>Detection vs prevention:</b> auditing tells you afterward that something went wrong. '
+        'This stops the chain <i>while it runs</i> \u2014 the faulty agent\u2019s output is checked the instant it appears, and '
+        'the downstream agents that would commit the decision never execute. That is the difference between reviewing a '
+        'workflow and governing it.</div>',
+        unsafe_allow_html=True,
+    )
+else:
+    st.info("No halts in this run.")
+
+
 reviews = st.session_state.reviews
 if not reviews:
     st.markdown('<p class="stage-tag">Full session</p>', unsafe_allow_html=True)

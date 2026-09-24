@@ -150,6 +150,7 @@ class ChainStep:
     allowed_actions: frozenset[str]
     received_from: str | None    # upstream agent trusted (None for the record reader)
     received_amounts: tuple[float, ...] | None
+    acted_account_id: str | None = None   # the account this hop acted on (for wrong-target)
 
 
 @dataclass(frozen=True)
@@ -160,6 +161,7 @@ class ChainOutcome:
     chain: tuple[ChainStep, ...]
     corrupt: bool
     is_star_case: bool = False
+    fault: str | None = None   # which fault class was planted, if any
 
 
 @dataclass(frozen=True)
@@ -196,3 +198,42 @@ class ChainReview:
     outcome: ChainOutcome
     security: tuple[SecurityCheck, ...]
     governance: ChainAttribution
+
+
+# ---------------------------------------------------------------------------
+# Step-gated execution (runtime halt): produce a step, check it, gate the next.
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class GatedStep:
+    """One step in a step-gated run, with its execution status.
+
+    status is one of:
+      * "executed"          - the step ran and passed its governance check
+      * "blocked_at_gate"   - the step's action was denied before it ran
+                              (permission/scope fault; the action never executed)
+      * "halted_after"      - the step ran, its output failed the check, and the
+                              chain was halted (this step is the point of detection)
+      * "not_run"           - a downstream step that never executed because the
+                              chain was already halted/blocked upstream
+    """
+
+    step: "ChainStep | None"           # None only for a gate-blocked action we refused to build
+    agent: str
+    step_index: int
+    status: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class GatedRun:
+    """Result of running one alert through the step-gated chain."""
+
+    alert: "Alert"
+    steps: tuple[GatedStep, ...]
+    halted: bool                        # True if the chain was stopped early
+    halt_step_index: int | None        # where it stopped (gate or post-step)
+    halt_kind: str | None              # "gate" (pre-action deny) or "behavioral" (post-step halt)
+    category: str | None               # the fault category that triggered the halt
+    reason: str
+    fault: str | None                  # the planted fault label (for the demo)
+    consequential_prevented: bool      # True if a harmful downstream step was stopped
