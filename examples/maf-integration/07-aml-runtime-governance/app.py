@@ -243,11 +243,11 @@ from handoff_governance import (
 )
 
 st.markdown('<p class="stage-tag" style="margin-top:2.2rem">Runtime detection \u00b7 governing the interaction between agents</p>', unsafe_allow_html=True)
-st.markdown('<h2 class="stage-title">A dropped handoff, caught before the workflow claims success</h2>', unsafe_allow_html=True)
+st.markdown('<h2 class="stage-title">A dropped handoff, caught and blocked before the workflow claims success</h2>', unsafe_allow_html=True)
 st.markdown(
     '<p class="stage-help">One agent hands a task to the next; the next never picks it up. Because an absence raises no '
     'event, governance tracks the expected pickup with a deadline and flags the gap the moment the deadline lapses \u2014 '
-    'in-flight, before the workflow reports the alert closed. Press play to watch the clock.</p>',
+    'in-flight, and blocks the workflow from closing before the false success can stand. Press play to watch the clock.</p>',
     unsafe_allow_html=True,
 )
 
@@ -312,9 +312,10 @@ if _flag is not None:
     with v2:
         st.markdown(
             f'<div class="lane catch"><p class="q">Governance lane \u00b7 alert {display_label(_dropped_id, _dropped_id)}</p>'
-            f'<p class="verdict">FLAG \u2014 responsibility gap</p>'
+            f'<p class="verdict">HALTED \u2014 responsibility gap</p>'
             f'<p class="body">Handoff {_flag.sender} \u2192 {_flag.recipient} issued at step {_flag.opened_step}, '
-            f'never accepted by deadline (step {_flag.deadline_step}). Flagged {_lead} step(s) before the workflow closed.</p></div>',
+            f'never accepted by deadline (step {_flag.deadline_step}). Governance blocked the workflow from closing '
+            f'{_lead} step(s) before it would have \u2014 the false success was prevented, and the alert is held for human review.</p></div>',
             unsafe_allow_html=True,
         )
 

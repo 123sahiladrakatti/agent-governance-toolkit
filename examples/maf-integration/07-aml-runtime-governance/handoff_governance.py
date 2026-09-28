@@ -253,7 +253,7 @@ def _chain_node_order() -> list[str]:
     return seen
 
 
-def render_flow_svg(event_log, flag, current_step, deadline_k=DEFAULT_DEADLINE_K, dropped_alert_id=None):
+def render_flow_svg(event_log, flag, current_step, deadline_k=DEFAULT_DEADLINE_K, dropped_alert_id=None, governed=True):
     """Return an SVG string showing the agent chain at current_step.
 
     The edge under the dropped handoff animates: grey (idle) -> amber with a live
@@ -275,7 +275,7 @@ def render_flow_svg(event_log, flag, current_step, deadline_k=DEFAULT_DEADLINE_K
     dropped_sender = issued.sender if issued else nodes[0]
     dropped_recipient = issued.recipient if issued else nodes[1]
 
-    W, H = 720, 240
+    W, H = 720, 272
     n = len(nodes)
     box_w, box_h = 150, 66
     gap = (W - n * box_w) / (n + 1)
@@ -287,6 +287,10 @@ def render_flow_svg(event_log, flag, current_step, deadline_k=DEFAULT_DEADLINE_K
 
     parts = ['<svg viewBox="0 0 ' + str(W) + ' ' + str(H) + '" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;font-family:ui-sans-serif,system-ui,sans-serif">']
 
+    _edge_label = ""
+    _edge_sub = ""
+    _edge_colour = LINE
+    _edge_mid = W / 2
     for sender, recipient in HOPS:
         x1, y1 = positions[sender]
         x2, y2 = positions[recipient]
@@ -310,10 +314,12 @@ def render_flow_svg(event_log, flag, current_step, deadline_k=DEFAULT_DEADLINE_K
         dash = ' stroke-dasharray="6 5"' if colour == AMBER else ''
         parts.append('<line x1="' + str(sx) + '" y1="' + str(sy) + '" x2="' + str(ex) + '" y2="' + str(ey) + '" stroke="' + colour + '" stroke-width="3"' + dash + '/>')
         parts.append('<polygon points="' + str(ex) + ',' + str(ey) + ' ' + str(ex-9) + ',' + str(ey-5) + ' ' + str(ex-9) + ',' + str(ey+5) + '" fill="' + colour + '"/>')
-        if label:
-            parts.append('<text x="' + str(midx) + '" y="' + str(sy-12) + '" fill="' + colour + '" font-size="12" font-weight="700" text-anchor="middle">' + label + '</text>')
-        if sub:
-            parts.append('<text x="' + str(midx) + '" y="' + str(sy+20) + '" fill="' + colour + '" font-size="11" text-anchor="middle">' + sub + '</text>')
+        if is_dropped_edge and label:
+            _edge_label = label
+            _edge_sub = sub
+            _edge_colour = colour
+            _edge_mid = midx
+            parts.append('<circle cx="' + str(midx) + '" cy="' + str(sy) + '" r="4" fill="' + colour + '"/>')
 
     for name in nodes:
         x, y = positions[name]
@@ -326,13 +332,25 @@ def render_flow_svg(event_log, flag, current_step, deadline_k=DEFAULT_DEADLINE_K
         parts.append('<text x="' + str(x+box_w/2) + '" y="' + str(y+box_h/2-4) + '" fill="' + INK + '" font-size="13" font-weight="700" text-anchor="middle">' + short + '</text>')
         parts.append('<text x="' + str(x+box_w/2) + '" y="' + str(y+box_h/2+14) + '" fill="' + MUTED + '" font-size="10.5" text-anchor="middle">agent</text>')
 
+    if _edge_label:
+        cap_x = min(max(_edge_mid, 130), W - 130)
+        parts.append('<text x="' + str(cap_x) + '" y="66" fill="' + _edge_colour + '" font-size="13" font-weight="700" text-anchor="middle">' + _edge_label + '</text>')
+        if _edge_sub:
+            parts.append('<text x="' + str(cap_x) + '" y="84" fill="' + _edge_colour + '" font-size="11" text-anchor="middle">' + _edge_sub + '</text>')
+
     if closed_step is not None and current_step >= closed_step:
         lastx, lasty = positions[nodes[-1]]
         cx = lastx + box_w / 2
         cy = lasty + box_h + 26
         lead = closed_step - deadline_step if deadline_step is not None else 0
-        parts.append('<text x="' + str(cx) + '" y="' + str(cy) + '" fill="' + BLUE + '" font-size="12" font-weight="700" text-anchor="middle">workflow reported CLOSED</text>')
-        parts.append('<text x="' + str(cx) + '" y="' + str(cy+16) + '" fill="' + BLUE + '" font-size="10.5" text-anchor="middle">(false completion \u2014 flagged ' + str(lead) + ' step(s) earlier)</text>')
+        gap_flagged = deadline_step is not None and current_step >= deadline_step
+        if governed and gap_flagged:
+            # Governance intervened: the close is BLOCKED, not allowed to stand.
+            parts.append('<text x="' + str(cx) + '" y="' + str(cy) + '" fill="' + RED + '" font-size="12" font-weight="700" text-anchor="middle">workflow close BLOCKED</text>')
+            parts.append('<text x="' + str(cx) + '" y="' + str(cy+16) + '" fill="' + RED + '" font-size="10.5" text-anchor="middle">held for human review \u2014 false success prevented</text>')
+        else:
+            parts.append('<text x="' + str(cx) + '" y="' + str(cy) + '" fill="' + BLUE + '" font-size="12" font-weight="700" text-anchor="middle">workflow reported CLOSED</text>')
+            parts.append('<text x="' + str(cx) + '" y="' + str(cy+16) + '" fill="' + BLUE + '" font-size="10.5" text-anchor="middle">(false completion \u2014 flagged ' + str(lead) + ' step(s) earlier)</text>')
 
     parts.append('<text x="16" y="24" fill="' + MUTED + '" font-size="12">step ' + str(current_step) + '</text>')
     parts.append('</svg>')
