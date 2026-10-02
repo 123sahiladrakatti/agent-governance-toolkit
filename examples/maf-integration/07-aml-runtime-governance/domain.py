@@ -193,11 +193,15 @@ class ChainAttribution:
 
 @dataclass(frozen=True)
 class ChainReview:
-    """Everything the UI needs for one chain: hops, security lane, governance lane."""
+    """Everything the UI needs for one chain's governance stages and outcome."""
 
     outcome: ChainOutcome
     security: tuple[SecurityCheck, ...]
     governance: ChainAttribution
+    content_checks: tuple[dict[str, object], ...] = ()
+    action_decision: dict[str, object] = field(default_factory=dict)
+    agt_live: bool = False
+    nemo_live: bool = False
 
 
 # ---------------------------------------------------------------------------

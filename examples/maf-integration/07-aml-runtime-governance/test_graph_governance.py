@@ -7,9 +7,13 @@ from agt_resolver import AGT_AVAILABLE, BehavioralAuthorityResolver, GraphGovern
 from domain import GraphOutcome
 
 
+def allow_content(_agent_output):
+    return {"passed": True, "rail": "self_check_output", "reason": "test allow"}
+
+
 class DiamondGovernanceTests(unittest.TestCase):
     def setUp(self):
-        self.governor = GraphGovernor()
+        self.governor = GraphGovernor(content_checker=allow_content)
         self.reviews = [self.governor.review(o) for o in run_diamond_session(40, 7)]
         self.star = next(r for r in self.reviews if r.outcome.is_star_case)
 
@@ -19,6 +23,8 @@ class DiamondGovernanceTests(unittest.TestCase):
         self.assertEqual(self.star.attribution.merged_disposition, "CLEAR")
         self.assertEqual(self.star.attribution.expected_disposition, "FILE_SAR")
         self.assertFalse(self.star.policy_decision["allowed"])
+        self.assertEqual(self.star.policy_decision["action"], "deny")
+        self.assertEqual(self.star.policy_decision["matched_rule"], "deny-incorrect-behavioral-result")
         self.assertEqual(self.star.attribution.origin_node, "C")
         self.assertEqual(self.star.attribution.masked_by, ("customer-screening", "kyc-entity"))
         self.assertIn("misread $9,200 as $2,900", self.star.attribution.reason)
@@ -29,12 +35,36 @@ class DiamondGovernanceTests(unittest.TestCase):
             self.skipTest("agentmesh not installed")
         self.assertTrue(self.star.agt_live)
         self.assertTrue(self.star.authority_decision["invoked_by_engine"])
-        self.assertTrue(self.star.policy_decision["reason"].startswith("Authority resolver denied: "))
+        self.assertEqual(self.star.authority_decision["decision"], "deny")
+        self.assertEqual(self.star.policy_decision["reason"], "Record-relative behavioral governance failed.")
 
     def test_clean_diamonds_commit(self):
         clean = [r for r in self.reviews if not r.outcome.is_star_case]
         self.assertTrue(all(r.attribution.passed and r.status == "committed" for r in clean))
+        self.assertTrue(all(r.policy_decision["action"] == "allow" for r in clean))
+        self.assertTrue(all(r.nemo_live for r in clean))
         self.assertEqual(sum(not r.attribution.passed for r in self.reviews), 1)
+
+    def test_nemo_flag_is_consumed_as_human_approval_not_resolver_input(self):
+        flagged = lambda _: {"passed": False, "rail": "self_check_output", "reason": "test injection flag"}
+        outcome = run_diamond_session(8, 7)[0]
+        review = GraphGovernor(content_checker=flagged).review(outcome)
+
+        self.assertTrue(review.attribution.passed)
+        self.assertTrue(review.authority_decision["invoked_by_engine"])
+        self.assertEqual(review.policy_decision["action"], "require_approval")
+        self.assertEqual(review.policy_decision["matched_rule"], "require-review-for-nemo-flag")
+        self.assertEqual(review.status, "escalated")
+
+    def test_unavailable_nemo_is_visible_but_does_not_block_clean_action(self):
+        unavailable = lambda _: {"passed": True, "rail": "unavailable", "reason": "nemo not running"}
+        outcome = run_diamond_session(8, 7)[0]
+        review = GraphGovernor(content_checker=unavailable).review(outcome)
+
+        self.assertFalse(review.nemo_live)
+        self.assertEqual(review.policy_decision["action"], "allow")
+        self.assertEqual(review.policy_decision["matched_rule"], "allow-with-nemo-unavailable")
+        self.assertEqual(review.content_checks[0]["reason"], "nemo not running")
 
     def test_resolver_fails_closed_without_graph(self):
         from types import SimpleNamespace

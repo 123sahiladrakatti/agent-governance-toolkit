@@ -1,73 +1,81 @@
-"""Manager-facing Streamlit UI: runtime governance for a 3-agent AML chain.
+"""Streamlit demo: fan-out/fan-in AML governance running as AGT's authority resolver.
 
-The subject is agent governance, not money-laundering detection. AML is only the
-setting. The demo shows a failure that cannot happen with a single hop: a value
-misread by the first agent flows untouched through two trusting downstream
-agents. Every agent-to-agent handoff is authorized (security is intact), yet the
-end-to-end decision is wrong (governance fails) - and the governance lane names
-the agent that originated the error versus those that merely propagated it.
+The intake agent fans one alert out to three parallel branches
+(customer-screening, transaction-analysis, kyc-entity); the decision agent merges
+them. The transaction-analysis branch misreads the deposits and reports "not structuring"; its two correct, clean
+siblings mask it, and the merge returns a confident CLEAR. Every handoff passes
+AGT's static rules. The merge commit then goes through AGT's PolicyEngine, which
+calls the AuthorityResolver slot. AGT ships that slot empty; ours fills it,
+recomputes every branch from the records, and denies with branch attribution.
+
+Run:  streamlit run app.py
 """
 
 from __future__ import annotations
 
-import time
+import html
 
 import streamlit as st
 
-from agent_sim import run_chain_session
-from domain import recompute_structuring
-from governance import ChainGovernance, ChainMonitor, SecurityLane
+from agent_sim import (
+    DIAMOND_NODE_ID,
+    DISPOSITION_AGENT,
+    KYC_AGENT,
+    SANCTIONS_AGENT,
+    TRANSACTION_AGENT,
+    TRIAGE_AGENT,
+    run_diamond_session,
+)
+from agt_resolver import GraphGovernor, POLICY_VERSION
+from domain import STRUCTURING_WINDOW_DAYS, recompute_structuring
 
-st.set_page_config(page_title="Agent Governance Review", page_icon="\u25c6", layout="wide")
+st.set_page_config(page_title="AGT Graph Governance", page_icon="◆", layout="wide")
 
 st.markdown("""
 <style>
-:root { --ink:#17212b; --muted:#667580; --line:#d7e0e5; --paper:#f5f7f6; --green:#176b45; --green-bg:#e7f5ed; --red:#b12632; --red-bg:#fff0f1; --gold:#9a6819; --amber-bg:#fbf3e2; --blue:#1f5c8a; }
+:root { --ink:#17212b; --muted:#667580; --line:#d7e0e5; --paper:#f5f7f6; --green:#176b45; --green-bg:#e7f5ed; --red:#b12632; --red-bg:#fff0f1; --gold:#9a6819; --amber-bg:#fbf3e2; --blue:#1f5c8a; --blue-bg:#eaf2f9; }
 html, body, [class*="css"] { font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,sans-serif; }
 .stApp { background:var(--paper); color:var(--ink); } .block-container { max-width:1180px; padding:2rem 1.5rem 4rem; }
+.agt-bar { display:flex; align-items:center; gap:.8rem; flex-wrap:wrap; padding:.6rem .9rem; border:1px solid var(--line); background:#fff; margin-bottom:.8rem; font-size:.86rem; }
+.pill { display:inline-block; padding:.22rem .55rem; font:700 .76rem ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.02em; }
+.pill.live { color:var(--green); background:var(--green-bg); border:1px solid #b7dcc6; } .pill.fallback { color:var(--gold); background:var(--amber-bg); border:1px solid #ecd9ad; }
+.agt-bar code, .mono { font:.8rem ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--muted); }
 .hero { padding:1.6rem 1.7rem; border:1px solid var(--line); background:#fff; }
 .hero .kicker { color:var(--muted); font-size:.85rem; margin:0 0 .5rem; }
-.hero h1 { margin:.1rem 0 .5rem; font-size:clamp(1.8rem,3.4vw,2.7rem); letter-spacing:-.03em; line-height:1.08; }
-.hero p { max-width:800px; margin:0; color:var(--muted); font-size:1rem; line-height:1.55; }
-.explain { margin:1rem 0 .4rem; padding:1rem 1.2rem; border-left:5px solid var(--red); background:#fff; line-height:1.55; } .explain b { color:var(--red); }
+.hero h1 { margin:.1rem 0 .5rem; font-size:clamp(1.7rem,3.2vw,2.5rem); letter-spacing:-.03em; line-height:1.1; }
+.hero p { max-width:820px; margin:0; color:var(--muted); font-size:1rem; line-height:1.55; }
 .stage-tag { margin:2rem 0 .35rem; color:var(--muted); font-size:.9rem; }
 .stage-title { margin:.1rem 0 .3rem; font-size:1.4rem; letter-spacing:-.02em; }
-.stage-help { color:var(--muted); font-size:.92rem; margin:0 0 1rem; max-width:780px; line-height:1.5; }
+.stage-help { color:var(--muted); font-size:.92rem; margin:0 0 1rem; max-width:800px; line-height:1.5; }
 .scene { border:1px solid var(--line); background:#fff; padding:1.2rem 1.3rem; margin-bottom:1rem; }
 .scene h4 { margin:0 0 .7rem; font-size:1.02rem; }
 .facts { width:100%; border-collapse:collapse; font-size:.9rem; }
-.facts th, .facts td { text-align:left; padding:.42rem .6rem; border-bottom:1px solid var(--line); }
-.facts th { color:var(--muted); font-weight:600; }
-.facts td.num { text-align:right; font-variant-numeric:tabular-nums; }
-/* chain hops */
-.chain { display:grid; grid-template-columns:1fr auto 1fr auto 1fr; align-items:stretch; gap:0; }
-.hop { border:1px solid var(--line); background:#fff; padding:.9rem .95rem; }
-.hop .who { font-weight:700; font-size:.95rem; margin:0 0 .35rem; }
-.hop .role { color:var(--muted); font-size:.8rem; margin:0 0 .6rem; }
-.hop .val { font-variant-numeric:tabular-nums; font-size:.88rem; margin:.15rem 0; }
-.hop .sec { margin-top:.6rem; padding-top:.5rem; border-top:1px solid var(--line); font-size:.82rem; font-weight:600; }
-.hop .sec.pass { color:var(--green); } .hop .sec.flag { color:var(--red); }
-.hop.origin { border-color:var(--red); background:var(--red-bg); }
-.hop.prop { border-color:#dfc98a; background:var(--amber-bg); }
-.hop .tag { display:inline-block; margin-top:.5rem; padding:.12rem .4rem; font-size:.72rem; font-weight:700; }
-.hop .tag.origin { color:var(--red); background:#ffdfe1; } .hop .tag.prop { color:var(--gold); background:#f3e4bf; }
-.arrow { display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:1.1rem; padding:0 .5rem; }
+.facts th, .facts td { text-align:left; padding:.42rem .6rem; border-bottom:1px solid var(--line); vertical-align:top; }
+.facts th { color:var(--muted); font-weight:600; } .facts td.num { text-align:right; font-variant-numeric:tabular-nums; }
+.facts tr.bad td { background:var(--red-bg); } .facts td.ok { color:var(--green); font-weight:700; } .facts td.no { color:var(--red); font-weight:700; }
+/* pipeline */
+.pipe { display:grid; grid-template-columns:repeat(4,1fr); gap:.5rem; margin:.2rem 0 0; }
+.pipe .st { border:1px solid var(--line); background:#fff; padding:.75rem .8rem; font-size:.84rem; line-height:1.4; position:relative; }
+.pipe .st b { display:block; font-size:.88rem; margin-bottom:.2rem; } .pipe .st span { color:var(--muted); }
+.pipe .st.ours { border:2px solid var(--blue); background:var(--blue-bg); } .pipe .st.ours b { color:var(--blue); }
+.pipe .who { display:inline-block; margin-top:.45rem; padding:.1rem .35rem; font:700 .68rem ui-monospace,monospace; }
+.pipe .who.agt { color:var(--muted); background:#eef1f3; } .pipe .who.us { color:#fff; background:var(--blue); }
+/* lanes */
 .lane { border:1px solid var(--line); background:#fff; padding:1.1rem 1.15rem; height:100%; }
-.lane.miss { border-color:#cdd9d0; background:#fbfdfb; } .lane.catch { border-color:#e4aeb2; background:var(--red-bg); }
+.lane.pass { border-color:#b7dcc6; background:#fbfdfb; } .lane.deny { border:2px solid var(--red); background:var(--red-bg); } .lane.halt { border-color:#e4aeb2; background:#fff8f8; }
+.lane .src { font:700 .72rem ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--muted); margin:0 0 .35rem; letter-spacing:.02em; }
 .lane .q { color:var(--muted); font-size:.86rem; margin:0 0 .5rem; }
-.lane .verdict { font-weight:700; font-size:1.05rem; margin:0 0 .5rem; }
-.lane.miss .verdict { color:var(--green); } .lane.catch .verdict { color:var(--red); }
+.lane .verdict { font-weight:800; font-size:1.25rem; margin:0 0 .5rem; letter-spacing:-.01em; }
+.lane.pass .verdict { color:var(--green); } .lane.deny .verdict, .lane.halt .verdict { color:var(--red); }
 .lane .body { color:var(--ink); font-size:.9rem; line-height:1.5; margin:0; }
-.takeaway { margin:.4rem 0 0; padding:1rem 1.2rem; background:var(--amber-bg); border:1px solid #ecd9ad; font-size:.96rem; line-height:1.55; }
+.lane ul { margin:.3rem 0 0; padding-left:1.1rem; font-size:.84rem; } .lane li { margin:.1rem 0; }
+.quote { margin:.6rem 0 0; padding:.6rem .7rem; background:#fff; border:1px solid #e4aeb2; font:.8rem/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--ink); }
+.quote .agtpre { color:var(--muted); } .quote .ourtxt { color:var(--red); font-weight:700; }
+.takeaway { margin:1rem 0 0; padding:1rem 1.2rem; background:var(--amber-bg); border:1px solid #ecd9ad; font-size:.96rem; line-height:1.55; }
 .control-box { padding:1rem 1.2rem; border:1px solid var(--line); background:#fff; } .control-label { margin-bottom:.3rem; font-weight:700; } .control-help { color:var(--muted); font-size:.85rem; }
 .score { display:grid; grid-template-columns:repeat(4,1fr); gap:.75rem; margin:1.2rem 0; } .metric { min-height:88px; padding:1rem; border:1px solid var(--line); background:#fff; } .metric strong { display:block; font-size:1.9rem; } .metric small { color:var(--muted); } .metric.hot { border-color:#e4aeb2; background:#fff8f8; } .metric.hot strong { color:var(--red); }
-.legend { display:flex; gap:1.2rem; flex-wrap:wrap; margin:.6rem 0 0; color:var(--muted); font-size:.84rem; }
-.result { padding:1rem 1.1rem; border:1px solid var(--line); background:#fff; } .result.flag { border-color:#e4aeb2; background:var(--red-bg); }
-.status { display:inline-block; float:right; padding:.25rem .45rem; font:700 .7rem ui-monospace,SFMono-Regular,Menlo,monospace; } .status.pass { color:var(--green); background:var(--green-bg); } .status.flag { color:var(--red); background:#ffdfe1; }
-.result h3 { margin:0; font-size:1rem; } .result p { margin:.45rem 0 0; color:var(--muted); line-height:1.45; font-size:.88rem; }
-.drop-tl td { font-size:.9rem; } tr.drop-flag td { background:var(--red-bg); color:var(--red); font-weight:700; } tr.drop-close td { background:#eef3f7; color:var(--blue); font-weight:600; }
-.drop-tl td { font-size:.9rem; } tr.drop-flag td { background:var(--red-bg); color:var(--red); font-weight:700; } tr.drop-close td { background:#eef3f7; color:var(--blue); font-weight:600; }
-@media(max-width:820px){ .chain{grid-template-columns:1fr} .arrow{transform:rotate(90deg);padding:.3rem 0} .score{grid-template-columns:repeat(2,1fr)} .block-container{padding:1rem .8rem 3rem} }
+.diamond { width:100%; height:auto; display:block; }
+@media(max-width:820px){ .pipe{grid-template-columns:1fr 1fr} .score{grid-template-columns:repeat(2,1fr)} .block-container{padding:1rem .8rem 3rem} }
 </style>
 """, unsafe_allow_html=True)
 
@@ -76,413 +84,269 @@ def money(v: float) -> str:
     return f"${v:,.0f}"
 
 
-# --------------------------------------------------------------------------- header
+def esc(s: object) -> str:
+    return html.escape(str(s))
+
+
+governor = GraphGovernor()
+
+# --------------------------------------------------------------------------- AGT status bar
+if governor.agt_live:
+    status_pill = '<span class="pill live">AGT PolicyEngine: LIVE</span>'
+    status_text = (f'<code>{esc(governor.engine_class)}</code> &middot; resolver registered via '
+                   f'<code>engine.set_authority_resolver(BehavioralAuthorityResolver())</code>')
+else:
+    status_pill = '<span class="pill fallback">AGT PolicyEngine: fallback</span>'
+    status_text = ('agentmesh not importable &mdash; the same resolver runs standalone. '
+                   'Install <code>agent-governance-toolkit-core</code> to run it inside AGT.')
+st.markdown(f'<div class="agt-bar">{status_pill}<span>{status_text}</span></div>', unsafe_allow_html=True)
+
 st.markdown(
     '<div class="hero">'
-    '<p class="kicker">Runtime agent governance, shown on a 3-agent AML investigation chain</p>'
-    '<h1>Every handoff was authorized. The outcome was still wrong.</h1>'
-    '<p>Three AI agents pass one alert down a chain: one reads the records, the next builds the case, '
-    'the last files the decision. When the first agent misreads a value, that error flows through the '
-    'other two untouched \u2014 each trusting the agent before it. No single handoff breaks any permission. '
-    'This review shows why a security check clears all three while a governance check catches the failure '
-    'and names the agent that caused it.</p>'
+    '<p class="kicker">Runtime agent governance on a fan-out / fan-in AML investigation graph</p>'
+    '<h1>AGT authorized every handoff. Our resolver, inside AGT, still said DENY.</h1>'
+    '<p>One alert fans out to three parallel agents and fans back in to a fourth that merges their '
+    'results. One branch misreads the deposits. Its two siblings are correct and clean, so the merge '
+    'returns a confident CLEAR. Every handoff passes AGT’s rules. The verdict that stops it comes from '
+    'AGT’s own <b>PolicyEngine</b>, through the <b>AuthorityResolver</b> slot AGT ships empty. The logic '
+    'in that slot is ours.</p>'
     '</div>',
     unsafe_allow_html=True,
 )
+
+# --------------------------------------------------------------------------- where our logic lives
+st.markdown('<p class="stage-tag">Where the decision is made</p>', unsafe_allow_html=True)
+st.markdown('<h2 class="stage-title">Inside AGT’s pipeline, in the slot AGT leaves for us</h2>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="explain"><b>Two different questions:</b> the <b>security lane</b> asks '
-    '\u201cwas each agent allowed to do its step?\u201d and checks every hop in isolation. The '
-    '<b>governance lane</b> asks \u201cis the chain\u2019s final decision correct against the original '
-    'records?\u201d and, when it is not, walks the chain back to the agent that introduced the error.</div>',
+    '<div class="pipe">'
+    '<div class="st"><b>1 &nbsp;PolicyEngine.evaluate()</b><span>Every handoff and the final commit call AGT.</span><br><span class="who agt">AGT</span></div>'
+    '<div class="st"><b>2 &nbsp;Static JSON rules</b><span>pre_tool: is this handoff on a declared edge, within delegated actions?</span><br><span class="who agt">AGT + policy file</span></div>'
+    '<div class="st ours"><b>3 &nbsp;AuthorityResolver slot</b><span>AGT ships <code>DefaultAuthorityResolver</code>: allow everything. '
+    'We register <code>BehavioralAuthorityResolver</code>.</span><br><span class="who us">OUR LOGIC</span></div>'
+    '<div class="st"><b>4 &nbsp;PolicyDecision + AuditLog</b><span>AGT turns the resolver’s deny into its decision and hash-chains it.</span><br><span class="who agt">AGT</span></div>'
+    '</div>',
     unsafe_allow_html=True,
 )
 
+# --------------------------------------------------------------------------- controls
 c1, c2, c3 = st.columns([1.2, 1, 1])
 with c1:
-    st.markdown('<div class="control-box"><div class="control-label">Session size</div><div class="control-help">More alerts make the run longer.</div></div>', unsafe_allow_html=True)
-    alert_count = st.slider("Alerts", 8, 80, 40, label_visibility="collapsed")
+    st.markdown('<div class="control-box"><div class="control-label">Batch size</div><div class="control-help">Diamonds in the session (star case at #7).</div></div>', unsafe_allow_html=True)
+    count = st.slider("Diamonds", 8, 80, 40, label_visibility="collapsed")
 with c2:
     st.markdown('<div class="control-box"><div class="control-label">Replay seed</div><div class="control-help">Same seed reproduces the run.</div></div>', unsafe_allow_html=True)
     seed = int(st.number_input("Seed", min_value=1, value=7, step=1, label_visibility="collapsed"))
 with c3:
-    st.markdown('<div class="control-box"><div class="control-label">Full session</div><div class="control-help">Synthetic records only. No LLM.</div></div>', unsafe_allow_html=True)
-    run = st.button("Run the full session", type="primary", use_container_width=True)
+    st.markdown('<div class="control-box"><div class="control-label">Deterministic</div><div class="control-help">Synthetic records only. No LLM calls.</div></div>', unsafe_allow_html=True)
+
+session = run_diamond_session(count, seed)
+reviews = [governor.review(o) for o in session]
+star = next(r for r in reviews if r.outcome.is_star_case)
+alert = star.outcome.alert
+truth = recompute_structuring(alert)
+steps = {s.agent: s for s in star.outcome.steps}
+checks = {c.agent: c for c in star.attribution.branch_checks}
+
+# --------------------------------------------------------------------------- scene 1: records
+st.markdown('<p class="stage-tag">Walkthrough &middot; one alert through the diamond</p>', unsafe_allow_html=True)
+st.markdown(f'<h2 class="stage-title">{esc(alert.alert_id)} &middot; {esc(alert.customer.name)}</h2>', unsafe_allow_html=True)
+rows = "".join(
+    f"<tr><td>{t.id}</td><td>{t.timestamp:%b %d}</td><td>{t.type.replace('_', ' ')}</td><td class='num'>{money(t.amount)}</td></tr>"
+    for t in alert.transactions
+)
+st.markdown(
+    f'<div class="scene"><h4>1 &nbsp; The actual records</h4>'
+    f'<table class="facts"><thead><tr><th>Transaction</th><th>Date</th><th>Type</th><th>Amount</th></tr></thead><tbody>{rows}</tbody></table>'
+    f'<p style="margin:.7rem 0 0;font-size:.9rem;color:var(--muted)">Recomputed from these records: {truth.qualifying_count} '
+    f'sub-threshold cash deposits totalling <b>{money(truth.aggregate)}</b> within {STRUCTURING_WINDOW_DAYS} days &mdash; '
+    f'{"a structuring pattern that must be filed (FILE_SAR)." if truth.is_structuring else "not structuring."}</p></div>',
+    unsafe_allow_html=True,
+)
 
 
-# --------------------------------------------------------------------------- stage 1: narrated chain
-session = run_chain_session(alert_count, seed)
-star = next((o for o in session if o.is_star_case), None)
+# --------------------------------------------------------------------------- scene 2: the diamond
+def diamond_svg(review) -> str:
+    s = {x.agent: x for x in review.outcome.steps}
+    ck = {c.agent: c for c in review.attribution.branch_checks}
+    hop = {(h.sender, h.recipient): h for h in review.handoffs}
+    W, H, BW, BH = 900, 400, 212, 92
+    pos = {TRIAGE_AGENT: (20, 154), SANCTIONS_AGENT: (350, 18), TRANSACTION_AGENT: (350, 154),
+           KYC_AGENT: (350, 290), DISPOSITION_AGENT: (680, 154)}
+    role = {TRIAGE_AGENT: "fans out the alert", SANCTIONS_AGENT: "screens watchlist", TRANSACTION_AGENT: "reads the deposits",
+            KYC_AGENT: "verifies identity", DISPOSITION_AGENT: "merges 3 branches"}
 
-if star is not None:
-    alert = star.alert
-    truth = recompute_structuring(alert)
-    sec = SecurityLane().check(star.chain)
-    gov = ChainGovernance().check(alert, star.chain)
-    sec_by_step = {c.step_index: c for c in sec}
-
-    st.markdown('<p class="stage-tag">Walkthrough \u00b7 one alert down the chain</p>', unsafe_allow_html=True)
-    st.markdown('<h2 class="stage-title">One case, three agents, start to finish</h2>', unsafe_allow_html=True)
-    st.markdown('<p class="stage-help">Read it left to right. The first agent reads the records; the other two trust what they are handed. Watch where the value goes wrong and how far it travels before anything catches it.</p>', unsafe_allow_html=True)
-
-    # Scene 1: the alert + real records
-    rows = "".join(
-        f"<tr><td>{t.id}</td><td>{t.timestamp:%b %d}</td><td>{t.type.replace('_',' ')}</td>"
-        f"<td class='num'>{money(t.amount)}</td></tr>" for t in alert.transactions
-    )
-    st.markdown(
-        f'<div class="scene"><h4>1 &nbsp; The alert and its actual records</h4>'
-        f'<table class="facts"><thead><tr><th>Transaction</th><th>Date</th><th>Type</th><th>Amount</th></tr></thead>'
-        f'<tbody>{rows}</tbody></table>'
-        f'<p style="margin:.7rem 0 0;font-size:.9rem;color:var(--muted)">Recomputed from these records: '
-        f'{truth.qualifying_count} sub-threshold cash deposits totalling <b>{money(truth.aggregate)}</b> '
-        f'\u2014 {"a structuring pattern that should be filed (FILE_SAR)." if truth.is_structuring else "not a structuring pattern."}</p></div>',
-        unsafe_allow_html=True,
-    )
-
-    # Scene 2: the chain, hop by hop, with security verdicts and origin/propagator tags
-    def hop_html(stp) -> str:
-        role = {1: "reads the records", 2: "trusts step 1, builds case", 3: "trusts step 2, files"}[stp.step_index]
-        is_origin = gov.origin_step == stp.step_index and not gov.passed
-        is_prop = stp.agent in gov.propagators and not gov.passed
-        klass = "hop origin" if is_origin else ("hop prop" if is_prop else "hop")
-        sc = sec_by_step[stp.step_index]
-        sec_cls = "pass" if sc.passed else "flag"
-        recv = "" if stp.received_from is None else f'<div class="val" style="color:var(--muted)">received: {[round(x) for x in (stp.received_amounts or ())]}</div>'
-        tag = ""
-        if is_origin:
-            tag = '<div class="tag origin">error originated here</div>'
-        elif is_prop:
-            tag = '<div class="tag prop">propagated the error</div>'
-        return (
-            f'<div class="{klass}"><p class="who">{stp.agent}</p><p class="role">step {stp.step_index} \u00b7 {role}</p>'
-            f'<div class="val">used: {[round(x) for x in stp.used_amounts]}</div>'
-            f'{recv}'
-            f'<div class="val">decision: <b>{stp.disposition}</b></div>'
-            f'<div class="sec {sec_cls}">security: {"PASS" if sc.passed else "FLAG"}</div>'
-            f'{tag}</div>'
-        )
-
-    st.markdown(
-        f'<div class="scene"><h4>2 &nbsp; The three agents, and what each security check sees</h4>'
-        f'<div class="chain">{hop_html(star.chain[0])}<div class="arrow">\u2192</div>'
-        f'{hop_html(star.chain[1])}<div class="arrow">\u2192</div>{hop_html(star.chain[2])}</div>'
-        f'<p style="margin:.8rem 0 0;font-size:.88rem;color:var(--muted)">Every hop passes its own security check: each agent used an action it was permitted to use. Security is intact across the whole chain.</p></div>',
-        unsafe_allow_html=True,
-    )
-
-    # Scene 3: the two lanes
-    left, right = st.columns(2)
-    with left:
-        st.markdown(
-            '<div class="lane miss"><p class="q">Security lane \u2014 was each agent allowed to act?</p>'
-            '<p class="verdict">PASS \u2014 all three hops authorized</p>'
-            '<p class="body">Every agent stayed within its permitted actions. No breach at any handoff. '
-            'A permission-only check clears the entire chain.</p></div>',
-            unsafe_allow_html=True,
-        )
-    with right:
-        if gov.passed:
-            st.markdown(
-                f'<div class="lane miss"><p class="q">Governance lane \u2014 is the chain\u2019s decision correct?</p>'
-                f'<p class="verdict">PASS \u2014 outcome matches records</p><p class="body">{gov.reason}</p></div>',
-                unsafe_allow_html=True,
-            )
+    def node(agent: str) -> str:
+        x, y = pos[agent]
+        st_ = s[agent]
+        c = ck.get(agent)
+        if agent == TRANSACTION_AGENT and c and not c.matches:
+            fill, stroke, sw, tone = "#fff0f1", "#b12632", 2.5, "#b12632"
+            line2 = f"reports: {st_.finding}"
+            line3 = f"used {money(st_.used_aggregate)} (records {money(truth.aggregate)})"
+        elif agent == DISPOSITION_AGENT:
+            wrong = c is not None and not c.matches
+            fill, stroke, sw, tone = ("#fbf3e2", "#9a6819", 2, "#9a6819") if wrong else ("#ffffff", "#d7e0e5", 1, "#17212b")
+            line2 = f"merged: {st_.disposition}"
+            line3 = "confident: 3/3 branches clean" if st_.finding.endswith("(3/3 branches clean)") else st_.finding
+        elif agent == TRIAGE_AGENT:
+            fill, stroke, sw, tone = "#ffffff", "#d7e0e5", 1, "#17212b"
+            line2, line3 = "routes to B, C, D", ""
         else:
-            st.markdown(
-                f'<div class="lane catch"><p class="q">Governance lane \u2014 is the chain\u2019s decision correct?</p>'
-                f'<p class="verdict">FLAG \u2014 {gov.category}</p><p class="body">{gov.reason}</p></div>',
-                unsafe_allow_html=True,
-            )
+            fill, stroke, sw, tone = "#ffffff", "#b7dcc6", 1.5, "#176b45"
+            line2, line3 = f"reports: {st_.finding}", "correct vs records"
+        return (f'<rect x="{x}" y="{y}" width="{BW}" height="{BH}" rx="6" fill="{fill}" stroke="{stroke}" stroke-width="{sw}"/>'
+                f'<text x="{x + 12}" y="{y + 24}" font-size="14" font-weight="700" fill="#17212b">{st_.node_id} &#183; {esc(agent)}</text>'
+                f'<text x="{x + 12}" y="{y + 42}" font-size="11.5" fill="#667580">{esc(role[agent])}</text>'
+                f'<text x="{x + 12}" y="{y + 62}" font-size="13" font-weight="700" fill="{tone}">{esc(line2)}</text>'
+                f'<text x="{x + 12}" y="{y + 80}" font-size="11" fill="{tone}">{esc(line3)}</text>')
 
-    if not gov.passed:
-        st.markdown(
-            f'<div class="takeaway"><b>Why this needs more than two agents:</b> the agent where the error '
-            f'<i>surfaces</i> ({star.chain[-1].agent}, which filed the wrong decision) is not the agent that '
-            f'<i>caused</i> it ({gov.origin_agent}, step {gov.origin_step}). With a single handoff there is nothing '
-            f'to trace; only across a chain can an error distance itself from its origin \u2014 and only a governance '
-            f'view that recomputes from the original records and walks the chain back can pin the blame correctly.</div>',
-            unsafe_allow_html=True,
-        )
+    def edge(a: str, b: str) -> str:
+        ax, ay = pos[a]; bx, by = pos[b]
+        x1, y1, x2, y2 = ax + BW, ay + BH / 2, bx, by + BH / 2
+        h = hop[(a, b)]
+        col = "#176b45" if h.passed else "#b12632"
+        mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+        label = "✓ handoff OK" if h.passed else "✗ handoff denied"
+        return (f'<line x1="{x1}" y1="{y1}" x2="{x2 - 4}" y2="{y2}" stroke="{col}" stroke-width="2" marker-end="url(#ah)"/>'
+                f'<rect x="{mx - 48}" y="{my - 10}" width="96" height="19" rx="3" fill="#e7f5ed" stroke="#b7dcc6"/>'
+                f'<text x="{mx}" y="{my + 4}" font-size="10.5" font-weight="700" fill="{col}" text-anchor="middle">{label}</text>')
 
-
-# --------------------------------------------------------------------------- stage 2: batch
-if "reviews" not in st.session_state:
-    st.session_state.reviews = []
-
-if run:
-    progress = st.progress(0, text="Starting the session")
-    monitor = ChainMonitor(context_window=8, checkpoint_interval=5)
-    reviews = []
-    for number, outcome in enumerate(session, start=1):
-        reviews.append(monitor.evaluate(outcome))
-        progress.progress(number / len(session), text=f"Agents working alert {number} of {len(session)}")
-        time.sleep(0.02)
-    st.session_state.reviews = reviews
-    st.session_state.metrics = monitor.metrics
-    progress.empty()
+    edges = "".join(edge(a, b) for a, b in review.outcome.edges)
+    nodes = "".join(node(a) for a in pos)
+    return (f'<svg class="diamond" viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg" font-family="ui-sans-serif,system-ui,sans-serif" role="img" aria-label="Diamond graph">'
+            f'<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
+            f'<path d="M0,0 L10,5 L0,10 z" fill="#667580"/></marker></defs>{edges}{nodes}</svg>')
 
 
-
-# ===========================================================================
-# STAGE 3 - Runtime detection of a DROPPED HANDOFF (responsibility gap)
-# ---------------------------------------------------------------------------
-# Visual, animated view of governing the interaction between agents. A task
-# handed between agents is never picked up; governance flags the gap in-flight
-# (at the deadline) before the workflow falsely reports completion.
-# Self-contained module; does not touch the AGT-integrated governance.py.
-# ===========================================================================
-from handoff_governance import (
-    simulate_handoff_session,
-    RuntimeObligationMonitor,
-    gap_before_close,
-    render_flow_svg,
-    display_label,
-    DEFAULT_DEADLINE_K,
-    EVENT_ISSUED,
-    EVENT_WORKFLOW_CLOSED,
-)
-
-st.markdown('<p class="stage-tag" style="margin-top:2.2rem">Runtime detection \u00b7 governing the interaction between agents</p>', unsafe_allow_html=True)
-st.markdown('<h2 class="stage-title">A dropped handoff, caught and blocked before the workflow claims success</h2>', unsafe_allow_html=True)
+c_step = steps[TRANSACTION_AGENT]
 st.markdown(
-    '<p class="stage-help">One agent hands a task to the next; the next never picks it up. Because an absence raises no '
-    'event, governance tracks the expected pickup with a deadline and flags the gap the moment the deadline lapses \u2014 '
-    'in-flight, and blocks the workflow from closing before the false success can stand. Press play to watch the clock.</p>',
+    f'<div class="scene"><h4>2 &nbsp; The graph: A fans out, B / C / D run in parallel, E merges</h4>{diamond_svg(star)}'
+    f'<p style="margin:-.3rem 0 .7rem;font-size:.84rem;color:var(--muted)">'
+    f'<b style="color:var(--green)">Green edge labels</b> = AGT permission check (was this handoff allowed?). '
+    f'<b style="color:var(--red)">Red box</b> = our correctness check (is the agent\u2019s output right vs the records?). '
+    f'An agent can be <b>permitted yet wrong</b> \u2014 that is the gap this governs.</p>'
+    f'<p style="margin:.6rem 0 0;font-size:.9rem;color:var(--muted)">C read the deposits as '
+    f'{", ".join(money(a) for a in c_step.used_amounts)} instead of {", ".join(money(a) for a in truth.qualifying_amounts)}. '
+    f'B and D are right, and they are clean. E sees three clean branches and merges a confident <b>{esc(steps[DISPOSITION_AGENT].disposition)}</b>.</p></div>',
     unsafe_allow_html=True,
 )
 
-# K slider (sensitivity: shorter = faster detection, more false positives)
-kc1, kc2 = st.columns([1, 2])
-with kc1:
-    deadline_k = st.slider("Detection deadline (steps)", 1, 6, DEFAULT_DEADLINE_K,
-                           help="How long governance waits before treating an un-accepted handoff as dropped. "
-                                "Shorter catches faster but risks flagging a merely-slow agent.")
+# --------------------------------------------------------------------------- scene 3: three verdict sources
+st.markdown('<p class="stage-tag">Three verdict sources for this run</p>', unsafe_allow_html=True)
+st.markdown('<h2 class="stage-title">Same alert, three questions</h2>', unsafe_allow_html=True)
 
-_hlog, _dropped_id = simulate_handoff_session(alert_count, seed, dropped_index=min(18, alert_count - 1))
-_hmon = RuntimeObligationMonitor(deadline_k=deadline_k)
-_hflags = _hmon.run(_hlog)
-
-# Focus the animation on the dropped alert's own step span.
-_d_events = [e for e in _hlog if e.alert_id == _dropped_id]
-_issue_step = next(e.step for e in _d_events if e.kind == EVENT_ISSUED)
-_close_step = next(e.step for e in _d_events if e.kind == EVENT_WORKFLOW_CLOSED)
-_start, _end = _issue_step - 1, _close_step
-
-if "dh_step" not in st.session_state:
-    st.session_state.dh_step = _end  # default to the final frame (shows the whole story)
-
-pc1, pc2, pc3 = st.columns([1, 1, 3])
-with pc1:
-    play = st.button("\u25b6 Play", use_container_width=True)
-with pc2:
-    reset = st.button("\u21ba Reset", use_container_width=True)
-with pc3:
-    st.session_state.dh_step = st.slider("Step", _start, _end, st.session_state.dh_step,
-                                         label_visibility="collapsed")
-
-_flag = _hflags[0] if _hflags else None
-_diagram = st.empty()
-
-def _draw(step: int) -> None:
-    svg = render_flow_svg(_hlog, _flag, step, deadline_k, _dropped_id)
-    _diagram.markdown(f'<div class="scene" style="padding:1.4rem">{svg}</div>', unsafe_allow_html=True)
-
-if reset:
-    st.session_state.dh_step = _start
-
-if play:
-    for _s in range(_start, _end + 1):
-        st.session_state.dh_step = _s
-        _draw(_s)
-        time.sleep(0.6)
-else:
-    _draw(st.session_state.dh_step)
-
-# Compact verdict strip (kept short; the diagram carries the story)
-if _flag is not None:
-    _lead = gap_before_close(_hlog, _flag)
-    v1, v2 = st.columns(2)
-    with v1:
-        st.markdown(
-            '<div class="lane miss"><p class="q">Security / AGT lane</p>'
-            '<p class="verdict">PASS</p>'
-            '<p class="body">Nothing unauthorized \u2014 the failure is a <i>missing</i> action, so a permission check has nothing to catch.</p></div>',
-            unsafe_allow_html=True,
-        )
-    with v2:
-        st.markdown(
-            f'<div class="lane catch"><p class="q">Governance lane \u00b7 alert {display_label(_dropped_id, _dropped_id)}</p>'
-            f'<p class="verdict">HALTED \u2014 responsibility gap</p>'
-            f'<p class="body">Handoff {_flag.sender} \u2192 {_flag.recipient} issued at step {_flag.opened_step}, '
-            f'never accepted by deadline (step {_flag.deadline_step}). Governance blocked the workflow from closing '
-            f'{_lead} step(s) before it would have \u2014 the false success was prevented, and the alert is held for human review.</p></div>',
-            unsafe_allow_html=True,
-        )
-
-
-
-# ===========================================================================
-# STAGE 4 - Runtime PREVENTION: step-gated halt (detect mid-run, stop the chain)
-# ---------------------------------------------------------------------------
-# Unlike the review path (which inspects a completed chain), this runs the chain
-# one step at a time and checks after each step. On a fault it HALTS: downstream
-# agents never run, so the faulty result never reaches the step that commits harm.
-# Two intervention points: a permission GATE (scope, blocked before it runs) and
-# a behavioral HALT (corruption/wrong-target/conflict, stopped after detection).
-# ===========================================================================
-from step_gate import run_gated_session
-
-st.markdown('<p class="stage-tag" style="margin-top:2.2rem">Runtime prevention \u00b7 detect mid-run and stop the chain</p>', unsafe_allow_html=True)
-st.markdown('<h2 class="stage-title">Catching the fault mid-run and halting before harm commits</h2>', unsafe_allow_html=True)
-st.markdown(
-    '<p class="stage-help">The earlier stages <i>detect</i> faults. This one <i>prevents</i> them: the chain runs step '
-    'by step, governance checks each step as it finishes, and the moment a fault is found the chain halts \u2014 the '
-    'downstream agents never run, so the wrong decision is never committed. Pick a fault to watch it stop.</p>',
-    unsafe_allow_html=True,
+n_ok = sum(h.passed for h in star.handoffs)
+hop_items = "".join(
+    f'<li>{DIAMOND_NODE_ID[h.sender]} &rarr; {DIAMOND_NODE_ID[h.recipient]} &nbsp;<b style="color:var(--{"green" if h.passed else "red"})">'
+    f'{esc(h.decision)}</b> <span class="mono">{esc(h.rule or "")}</span></li>' for h in star.handoffs
 )
+pd_ = star.policy_decision
+ad = star.authority_decision
+reason = pd_["reason"] or ""
+prefix = "Authority resolver denied: "
+quote = (f'<span class="agtpre">{esc(prefix)}</span><span class="ourtxt">{esc(reason[len(prefix):])}</span>'
+         if reason.startswith(prefix) else esc(reason))
+denied = not pd_["allowed"]
+status_word = {"halted": "HALTED", "committed": "COMMITTED", "escalated": "ESCALATED"}[star.status]
+engine_src = "agentmesh PolicyEngine.evaluate(stage='post_tool')" if star.agt_live else "fallback (same resolver, no AGT)"
 
-_gated = run_gated_session(alert_count, seed)
-_halted_runs = [r for r in _gated if r.halted]
-
-_label_map = {
-    "transitive-corruption": "Misread value (corruption)",
-    "wrong-target": "Wrong account (wrong-target)",
-    "scope": "Out-of-scope action (permission)",
-    "conflict": "Contradictory decisions (conflict)",
-}
-_choices = {f"{_label_map.get(r.fault, r.fault)} \u00b7 {r.alert.alert_id}": r for r in _halted_runs}
-
-if _choices:
-    pick = st.radio("Fault to inspect", list(_choices.keys()), horizontal=True, label_visibility="collapsed")
-    r = _choices[pick]
-
-    # Build the step-cards row: executed (green) / halted (red) / blocked-at-gate (red) / not-run (grey).
-    def _card(gs) -> str:
-        status = gs.status
-        if status == "executed":
-            cls, badge, badge_cls = "hop", "EXECUTED", "sec pass"
-        elif status == "halted_after":
-            cls, badge, badge_cls = "hop origin", "HALTED HERE", "sec flag"
-        elif status == "blocked_at_gate":
-            cls, badge, badge_cls = "hop origin", "BLOCKED AT GATE", "sec flag"
-        else:  # not_run
-            cls, badge, badge_cls = "hop", "NEVER RAN", "sec"
-        greyed = ' style="opacity:.5"' if status == "not_run" else ''
-        disp = ""
-        if gs.step is not None:
-            disp = f'<div class="val">decision: <b>{gs.step.disposition}</b></div>'
-        role = {1: "reads records", 2: "builds case", 3: "files decision"}.get(gs.step_index, "")
-        return (
-            f'<div class="{cls}"{greyed}><p class="who">{gs.agent}</p>'
-            f'<p class="role">step {gs.step_index} \u00b7 {role}</p>'
-            f'{disp}'
-            f'<div class="{badge_cls}">{badge}</div></div>'
-        )
-
-    cards = f'<div class="arrow">\u2192</div>'.join(_card(gs) for gs in r.steps)
-    st.markdown(f'<div class="scene"><div class="chain">{cards}</div>'
-                f'<p style="margin:.8rem 0 0;font-size:.88rem;color:var(--muted)">'
-                f'{"Permission gate: the action was denied before it ran." if r.halt_kind == "gate" else "Behavioral halt: the faulty step ran, its output failed the check, and the chain stopped."}'
-                f'</p></div>', unsafe_allow_html=True)
-
-    # Verdict + prevention banner
-    v1, v2 = st.columns(2)
-    with v1:
-        gate_line = ("Blocked at the gate \u2014 the action never executed." if r.halt_kind == "gate"
-                     else f"Halted after step {r.halt_step_index} \u2014 detected the moment the faulty output appeared.")
-        st.markdown(
-            f'<div class="lane catch"><p class="q">Runtime governance \u00b7 {r.alert.alert_id}</p>'
-            f'<p class="verdict">HALTED \u2014 {r.category}</p>'
-            f'<p class="body">{r.reason}<br><br>{gate_line}</p></div>',
-            unsafe_allow_html=True,
-        )
-    with v2:
-        prevented = r.consequential_prevented
-        st.markdown(
-            f'<div class="lane {"catch" if prevented else "miss"}"><p class="q">Outcome</p>'
-            f'<p class="verdict" style="color:{"#176b45" if prevented else "#b12632"}">'
-            f'{"Consequential action PREVENTED" if prevented else "Not prevented"}</p>'
-            f'<p class="body">{"The filing step never ran. The wrong decision was never committed \u2014 the chain was stopped before harm." if prevented else "The harmful step had already run before detection."}</p></div>',
-            unsafe_allow_html=True,
-        )
-
+l1, l2, l3 = st.columns([1, 1.35, 0.85])
+with l1:
     st.markdown(
-        '<div class="takeaway"><b>Detection vs prevention:</b> auditing tells you afterward that something went wrong. '
-        'This stops the chain <i>while it runs</i> \u2014 the faulty agent\u2019s output is checked the instant it appears, and '
-        'the downstream agents that would commit the decision never execute. That is the difference between reviewing a '
-        'workflow and governing it.</div>',
+        f'<div class="lane pass"><p class="src">SECURITY &middot; AGT PER-HOP (pre_tool)</p>'
+        f'<p class="q">Was each handoff <b>permitted</b>? (permission, not correctness)</p>'        
+        f'<p class="verdict">{n_ok} / {len(star.handoffs)} AUTHORIZED</p>'
+        f'<p class="body">Every edge is declared and every action is delegated. Static AGT rules pass all six.</p>'
+        f'<ul>{hop_items}</ul></div>',
         unsafe_allow_html=True,
     )
-else:
-    st.info("No halts in this run.")
+with l2:
+    st.markdown(
+        f'<div class="lane {"deny" if denied else "pass"}"><p class="src">GOVERNANCE &middot; AGT POLICYENGINE &rarr; OUR BehavioralAuthorityResolver</p>'
+        f'<p class="q">Is the merged decision right, given the records?</p>'
+        f'<p class="verdict">{"DENY" if denied else "ALLOW"}{" &mdash; attributed to branch " + esc(star.attribution.origin_node) if star.attribution.origin_node else ""}</p>'
+        f'<p class="body">AGT’s PolicyDecision for <code>commit_disposition</code>, verbatim. '
+        f'Grey is AGT’s wrapper; red is our resolver’s <code>narrowing_reason</code>:</p>'
+        f'<div class="quote">{quote}</div>'
+        f'<p class="body" style="margin-top:.55rem;font-size:.8rem;color:var(--muted)">source: <code>{esc(engine_src)}</code> &middot; '
+        f'resolver invoked by engine: <b>{ad["invoked_by_engine"]}</b> &middot; returned <code>{esc(ad["type"])}</code></p></div>',
+        unsafe_allow_html=True,
+    )
+with l3:
+    st.markdown(
+        f'<div class="lane {"halt" if star.status == "halted" else "pass"}"><p class="src">OUTCOME</p>'
+        f'<p class="q">What happened to the action?</p>'
+        f'<p class="verdict">{status_word}</p>'
+        f'<p class="body">{"The CLEAR was not committed. A deny from the PolicyEngine halts the action; the alert goes back for investigation." if star.status == "halted" else "The disposition was committed."}</p></div>',
+        unsafe_allow_html=True,
+    )
 
+st.markdown(
+    f'<div class="takeaway"><b>What to take from this:</b> six green AGT hops and a confident merged CLEAR, on a real '
+    f'structuring pattern. Per-hop checks can’t see it, because no hop broke a rule. A check that only looks at the merge '
+    f'can’t see it either, because 3/3 branches came back clean. Our resolver recomputes each branch from the records, '
+    f'finds that branch {esc(star.attribution.origin_node)} is the one that diverged, and returns that verdict through AGT’s '
+    f'own decision pipeline.</div>',
+    unsafe_allow_html=True,
+)
 
-reviews = st.session_state.reviews
-if not reviews:
-    st.markdown('<p class="stage-tag">Full session</p>', unsafe_allow_html=True)
-    st.info("Click \u201cRun the full session\u201d to run every alert through the 3-agent chain and see how often the chain is authorized end-to-end but reaches a wrong decision.")
-    st.stop()
+# --------------------------------------------------------------------------- scene 4: branch attribution
+st.markdown('<p class="stage-tag">Inside the resolver</p>', unsafe_allow_html=True)
+st.markdown('<h2 class="stage-title">Branch-level attribution, recomputed from records</h2>', unsafe_allow_html=True)
+st.markdown('<p class="stage-help">For each node, what it reported vs. what the records say. Branch C reuses the same '
+            'record-relative check as the linear chain demo (<code>ChainGovernance</code>), applied to that branch alone.</p>',
+            unsafe_allow_html=True)
+brows = "".join(
+    f'<tr class="{"" if c.matches else "bad"}"><td><b>{c.node_id}</b> &middot; {esc(c.agent)}</td><td>{esc(c.reported)}</td>'
+    f'<td>{esc(c.recomputed)}</td><td class="{"ok" if c.matches else "no"}">{"match" if c.matches else "diverged"}</td><td>{esc(c.detail)}</td></tr>'
+    for c in star.attribution.branch_checks
+)
+masked = ", ".join(f"{DIAMOND_NODE_ID[a]} ({a})" for a in star.attribution.masked_by) or "none"
+st.markdown(
+    f'<div class="scene"><table class="facts"><thead><tr><th>Node</th><th>Reported</th><th>Records say</th><th>Check</th><th>Detail</th></tr></thead>'
+    f'<tbody>{brows}</tbody></table>'
+    f'<p style="margin:.7rem 0 0;font-size:.9rem">Origin: <b style="color:var(--red)">{esc(star.attribution.origin_node or "none")} '
+    f'({esc(star.attribution.origin_agent or "-")})</b> &middot; masked by: <b>{esc(masked)}</b> &middot; '
+    f'category: <code>{esc(star.attribution.category or "-")}</code></p></div>',
+    unsafe_allow_html=True,
+)
 
-m = st.session_state.metrics
-gov_flags = sum(not r.governance.passed for r in reviews)
-sec_flags = sum(not all(c.passed for c in r.security) for r in reviews)
-intact_wrong = sum(all(c.passed for c in r.security) and not r.governance.passed for r in reviews)
+with st.expander("Proof: the raw AGT objects for this decision"):
+    st.markdown(f"**Resolver class** `{ad['resolver']}` subclasses `{ad['resolver_base']}`; registered with "
+                f"`engine.set_authority_resolver(...)` on `{governor.engine_class or 'n/a (fallback)'}`.")
+    st.markdown("**PolicyDecision** (returned by `PolicyEngine.evaluate`)")
+    st.json(pd_)
+    st.markdown("**AuthorityDecision** (returned by our `resolve()`; AGT called it)")
+    st.json(ad)
+    st.markdown(f"**AuditLog** (`{POLICY_VERSION}`, hash-chained by AGT when live)")
+    st.dataframe([{k: v for k, v in row.items()} for row in star.audit], hide_index=True, width="stretch")
 
-st.markdown('<p class="stage-tag">Full session \u00b7 the same chain across a long run</p>', unsafe_allow_html=True)
-st.markdown('<h2 class="stage-title">Security intact, governance failed</h2>', unsafe_allow_html=True)
-st.markdown('<p class="stage-help">Each alert runs through all three agents. The last figure is the one that matters: chains where every security check passed, yet the end-to-end decision was wrong.</p>', unsafe_allow_html=True)
+# --------------------------------------------------------------------------- batch
+st.markdown('<p class="stage-tag">Batch</p>', unsafe_allow_html=True)
+st.markdown(f'<h2 class="stage-title">The whole session: {len(reviews)} diamonds through the same engine</h2>', unsafe_allow_html=True)
+all_hops_ok = [r for r in reviews if all(h.passed for h in r.handoffs)]
+auth_but_wrong = [r for r in all_hops_ok if not r.attribution.passed]
+halted = [r for r in reviews if r.status == "halted"]
+total_hops = sum(len(r.handoffs) for r in reviews)
+ok_hops = sum(h.passed for r in reviews for h in r.handoffs)
 st.markdown(
     f'<div class="score">'
-    f'<div class="metric"><strong>{len(reviews)}</strong><small>Chains reviewed</small></div>'
-    f'<div class="metric"><strong>{sec_flags}</strong><small>Security lane flags</small></div>'
-    f'<div class="metric"><strong>{gov_flags}</strong><small>Governance lane flags</small></div>'
-    f'<div class="metric hot"><strong>{intact_wrong}</strong><small>Security intact but wrong</small></div>'
+    f'<div class="metric"><strong>{len(reviews)}</strong><small>diamonds reviewed</small></div>'
+    f'<div class="metric"><strong>{ok_hops} / {total_hops}</strong><small>handoffs authorized by AGT</small></div>'
+    f'<div class="metric hot"><strong>{len(auth_but_wrong)}</strong><small>authorized end-to-end but wrong</small></div>'
+    f'<div class="metric{" hot" if halted else ""}"><strong>{len(halted)}</strong><small>halted by AGT &rarr; our resolver</small></div>'
     f'</div>',
     unsafe_allow_html=True,
 )
-
-st.markdown('<p class="stage-tag" style="margin-top:1.4rem">Session state \u00b7 carried across the run</p>', unsafe_allow_html=True)
-h1, h2, h3 = st.columns(3)
-with h1:
-    st.metric("Turn", f"{m.turns} / {len(reviews)}")
-    st.caption(f"Checkpoints: {', '.join(map(str, m.checkpoints)) or 'none'}")
-with h2:
-    st.metric("Context pressure", f"{m.context_pressure:.1f}x")
-    st.caption(f"Retaining {m.retained_context} of {m.context_window} recent alerts")
-with h3:
-    st.metric("Security-intact-but-wrong", m.security_intact_but_wrong)
-    st.caption("Chains no permission check would have caught")
-
-st.markdown('<p class="stage-tag" style="margin-top:1.4rem">Chain log</p>', unsafe_allow_html=True)
-filter_choice = st.radio("Show", ["All chains", "Governance flags", "The narrated case"], horizontal=True, label_visibility="collapsed")
-visible = []
-for r in reviews:
-    if filter_choice == "Governance flags" and r.governance.passed:
-        continue
-    if filter_choice == "The narrated case" and not r.outcome.is_star_case:
-        continue
-    visible.append(r)
-
-for r in visible:
-    g = r.governance
-    starmark = "\u2605 " if r.outcome.is_star_case else ""
-    title = f"{starmark}{r.outcome.alert.alert_id} \u00b7 final decision: {g.final_disposition} \u00b7 {'governance FLAG' if not g.passed else 'ok'}"
-    with st.expander(title, expanded=r.outcome.is_star_case):
-        all_sec = all(c.passed for c in r.security)
-        left, right = st.columns(2)
-        with left:
-            st.markdown(
-                f'<div class="result"><span class="status {"pass" if all_sec else "flag"}">{"PASS" if all_sec else "FLAG"}</span>'
-                f'<h3>Security lane</h3><p>{"All three hops authorized." if all_sec else "A hop used an unpermitted action."}</p></div>',
-                unsafe_allow_html=True,
-            )
-        with right:
-            st.markdown(
-                f'<div class="result{"" if g.passed else " flag"}"><span class="status {"pass" if g.passed else "flag"}">{"PASS" if g.passed else "FLAG"}</span>'
-                f'<h3>Governance lane</h3><p>{g.reason}</p></div>',
-                unsafe_allow_html=True,
-            )
-        if not g.passed:
-            st.caption(f"Origin: {g.origin_agent} (step {g.origin_step}) \u00b7 propagators: {', '.join(g.propagators) or 'none'}")
-
-st.caption("Synthetic demonstration of runtime agent governance across a delegation chain. Not a real AML detector, SAR system, or compliance decision.")
+show_all = st.toggle("Show every diamond", value=False)
+rows_out = [
+    {"alert": r.outcome.alert.alert_id,
+     "hops authorized": f"{sum(h.passed for h in r.handoffs)}/{len(r.handoffs)}",
+     "B": r.outcome.step(SANCTIONS_AGENT).finding, "C": r.outcome.step(TRANSACTION_AGENT).finding,
+     "D": r.outcome.step(KYC_AGENT).finding, "merged": r.attribution.merged_disposition,
+     "records require": r.attribution.expected_disposition,
+     "AGT decision": r.policy_decision["action"].upper(), "attributed to": r.attribution.origin_node or "",
+     "outcome": r.status}
+    for r in reviews if show_all or not r.attribution.passed
+]
+st.dataframe(rows_out, hide_index=True, width="stretch")

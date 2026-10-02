@@ -53,6 +53,7 @@ from domain import (
     recompute_transactions,
 )
 from governance import ChainGovernance, ToolkitGovernanceAdapter
+from nemo_guardrails import NemoVerdict, nemo_check, summarize_nemo_checks
 
 
 def _import_agt():
@@ -111,6 +112,30 @@ GRAPH_POLICY = json.dumps({
          "stage": "pre_tool", "condition": "handoff.status != 'authorized'", "action": "deny", "priority": 100},
         {"name": "deny-commit-without-graph", "description": "Fail closed: a merge commit must carry its graph and records.",
          "stage": "post_tool", "condition": f"aml_graph.schema != '{GRAPH_SCHEMA}'", "action": "deny", "priority": 100},
+    ],
+})
+
+ACTION_GOVERNANCE_POLICY = json.dumps({
+    "apiVersion": "governance.toolkit/v1",
+    "version": "1.0",
+    "name": "aml-action-governance",
+    "description": "Final authorization, correctness, and NeMo content decision.",
+    "agents": ["*"],
+    "scope": "global",
+    "default_action": "deny",
+    "rules": [
+        {"name": "deny-unauthorized-action", "description": "Final action is not authorized.",
+         "stage": "post_tool", "condition": "action.status == 'unauthorized'", "action": "deny", "priority": 200},
+        {"name": "deny-incorrect-behavioral-result", "description": "Record-relative behavioral governance failed.",
+         "stage": "post_tool", "condition": "governance.status == 'failed'", "action": "deny", "priority": 150},
+        {"name": "require-review-for-nemo-flag", "description": "NeMo content flags require human approval.",
+         "stage": "post_tool", "condition": "nemo.status == 'flagged'", "action": "require_approval", "priority": 100},
+        {"name": "allow-clean-action", "description": "Authorization, correctness, and NeMo checks passed.",
+         "stage": "post_tool", "condition": "action.status == 'authorized' and governance.status == 'passed' and nemo.status == 'passed'",
+         "action": "allow", "priority": 50},
+        {"name": "allow-with-nemo-unavailable", "description": "Allow with an explicit unavailable NeMo signal when deterministic checks pass.",
+         "stage": "post_tool", "condition": "action.status == 'authorized' and governance.status == 'passed' and nemo.status == 'unavailable'",
+         "action": "allow", "priority": 40},
     ],
 })
 
@@ -314,16 +339,22 @@ class GraphReview:
     policy_decision: dict[str, Any]       # what AGT's PolicyEngine returned
     status: str                           # "committed" | "halted" | "escalated"
     audit: tuple[dict[str, Any], ...]
+    content_checks: tuple[dict[str, Any], ...] = ()
+    nemo_live: bool = False
 
 
 class GraphGovernor:
     """One AGT PolicyEngine (static handoff rules + our resolver) with an audit log."""
 
-    def __init__(self) -> None:
+    def __init__(self, content_checker: Callable[[str], NemoVerdict] = nemo_check) -> None:
         self.toolkit = ToolkitGovernanceAdapter(GRAPH_POLICY)
+        self.action_toolkit = ToolkitGovernanceAdapter(ACTION_GOVERNANCE_POLICY)
         self.engine_class = type(self.toolkit.engine).__module__ + "." + type(self.toolkit.engine).__name__ if self.toolkit.engine is not None else None
-        self.agt_live = AGT_AVAILABLE and self.toolkit.engine is not None
-        if self.agt_live:
+        self.resolver_engine_live = AGT_AVAILABLE and self.toolkit.engine is not None
+        self.action_engine_live = AGT_AVAILABLE and self.action_toolkit.engine is not None
+        self.agt_live = self.resolver_engine_live and self.action_engine_live
+        self.content_checker = content_checker
+        if self.resolver_engine_live:
             self.resolver = register(self.toolkit.engine)
         else:
             self.resolver = BehavioralAuthorityResolver()
@@ -331,7 +362,7 @@ class GraphGovernor:
     def _audit(self, agent: str, action: str, resource: str, context: dict, decision) -> dict[str, Any]:
         row = {"agent": agent, "action": action, "resource": resource, "decision": decision.action,
                "reason": getattr(decision, "reason", ""), "entry_hash": None}
-        if self.agt_live:
+        if self.resolver_engine_live:
             entry = self.toolkit.audit.log(
                 event_type="policy_evaluation", agent_did=agent, action=action, resource=resource, data=context,
                 outcome="success" if decision.allowed else "denied",
@@ -346,46 +377,98 @@ class GraphGovernor:
         by_agent = {s.agent: s for s in outcome.steps}
         audit: list[dict[str, Any]] = []
 
-        # Lane 1: per-hop handoff authorization through AGT static rules.
+        # Run each node's deterministic incoming-edge gates before checking its output.
         handoffs = []
-        for sender, recipient in outcome.edges:
-            r = by_agent[recipient]
-            ok = sender in DIAMOND_PARENTS.get(recipient, ()) and r.action_type in r.allowed_actions
-            ctx = {"handoff": {"sender": sender, "recipient": recipient,
-                               "status": "authorized" if ok else "unauthorized"},
-                   "action": {"type": "aml_graph_handoff", "authorized": ok}}
-            if self.agt_live:
-                d = self.toolkit.engine.evaluate(recipient, ctx, stage="pre_tool")
-            else:
-                d = SimpleNamespace(allowed=ok, action="allow" if ok else "deny",
-                                    matched_rule="allow-authorized-handoff" if ok else "deny-unauthorized-handoff",
-                                    reason="fallback: static handoff rule")
-            audit.append(self._audit(recipient, "aml_graph_handoff", resource, ctx, d))
-            handoffs.append(HandoffCheck(sender, recipient, bool(d.allowed), d.action,
-                                         getattr(d, "matched_rule", None), d.reason or ""))
+        content_checks: list[dict[str, Any]] = []
+        for step in outcome.steps:
+            for sender in step.received_from:
+                recipient = step.agent
+                ok = sender in DIAMOND_PARENTS.get(recipient, ()) and step.action_type in step.allowed_actions
+                ctx = {"handoff": {"sender": sender, "recipient": recipient,
+                                   "status": "authorized" if ok else "unauthorized"},
+                       "action": {"type": "aml_graph_handoff", "authorized": ok}}
+                if self.resolver_engine_live:
+                    d = self.toolkit.engine.evaluate(recipient, ctx, stage="pre_tool")
+                else:
+                    d = SimpleNamespace(allowed=ok, action="allow" if ok else "deny",
+                                        matched_rule="allow-authorized-handoff" if ok else "deny-unauthorized-handoff",
+                                        reason="fallback: static handoff rule")
+                audit.append(self._audit(recipient, "aml_graph_handoff", resource, ctx, d))
+                handoffs.append(HandoffCheck(sender, recipient, bool(d.allowed), d.action,
+                                             getattr(d, "matched_rule", None), d.reason or ""))
 
-        # Lane 2: merge commit through AGT PolicyEngine -> our resolver.
+            incoming = [check for check in handoffs if check.recipient == step.agent]
+            authorized = step.action_type in step.allowed_actions and all(check.passed for check in incoming)
+            if authorized:
+                output = (
+                    f"Agent: {step.agent} finding: {step.finding}; disposition: {step.disposition or 'not set'}; "
+                    f"evidence amounts: {list(step.used_amounts)}"
+                )
+                verdict = self.content_checker(output)
+            else:
+                verdict = {
+                    "passed": True,
+                    "rail": "skipped",
+                    "reason": "The deterministic authorization gate denied this step before execution.",
+                }
+            content_checks.append({"agent": step.agent, **verdict})
+        nemo_signal, nemo_live = summarize_nemo_checks(content_checks)
+
+        # Lane 3a: preserve the existing record-relative resolver as the correctness check.
         self.resolver.last_attribution = None
         self.resolver.last_decision = None
         calls_before = self.resolver.calls
         merge = by_agent[DISPOSITION_AGENT]
-        ctx = {"action": {"type": "commit_disposition"}, "tool_name": "commit_disposition",
-               "resource": resource, "capabilities": sorted(merge.allowed_actions),
-               "aml_graph": graph_context(outcome)}
-        if self.agt_live:
-            d = self.toolkit.engine.evaluate(DISPOSITION_AGENT, ctx, stage="post_tool")
+        resolver_context = {"action": {"type": "resolve_behavioral_correctness"}, "tool_name": "commit_disposition",
+                            "resource": resource, "capabilities": sorted(merge.allowed_actions),
+                            "nemo": nemo_signal, "aml_graph": graph_context(outcome)}
+        if self.resolver_engine_live:
+            resolver_decision = self.toolkit.engine.evaluate(DISPOSITION_AGENT, resolver_context, stage="post_tool")
             attribution = self.resolver.last_attribution
             if attribution is None:   # static fail-closed rule fired before the resolver
                 attribution = attribute_graph(alert, outcome.steps)
         else:
-            auth = self.resolver.resolve(SimpleNamespace(context=ctx, delegation=None))
+            auth = self.resolver.resolve(SimpleNamespace(context=resolver_context, delegation=None))
             denied = auth.decision == "deny"
-            d = SimpleNamespace(allowed=not denied, action="deny" if denied else "allow", matched_rule=None,
-                                policy_name=None,
-                                reason=(f"Authority resolver denied: {auth.narrowing_reason}" if denied
-                                        else "fallback: resolver allowed"))
+            resolver_decision = SimpleNamespace(
+                allowed=not denied,
+                action="deny" if denied else "allow",
+                matched_rule=None,
+                policy_name=None,
+                reason=(f"Authority resolver denied: {auth.narrowing_reason}" if denied
+                        else "fallback: resolver allowed"),
+            )
             attribution = self.resolver.last_attribution
-        audit.append(self._audit(DISPOSITION_AGENT, "commit_disposition", resource, ctx, d))
+
+        audit.append(self._audit(DISPOSITION_AGENT, "resolve_behavioral_correctness", resource,
+                                 resolver_context, resolver_decision))
+        action_authorized = all(handoff.passed for handoff in handoffs) and all(
+            step.action_type in step.allowed_actions for step in outcome.steps
+        )
+        action_context = {
+            "action": {
+                "type": "commit_disposition",
+                "authorized": action_authorized,
+                "status": "authorized" if action_authorized else "unauthorized",
+            },
+            "governance": {
+                "passed": attribution.passed,
+                "status": "passed" if attribution.passed else "failed",
+            },
+            "nemo": nemo_signal,
+            "resource": resource,
+            "capabilities": sorted(merge.allowed_actions),
+        }
+        d = self.action_toolkit.evaluate(
+            agent=DISPOSITION_AGENT,
+            action="commit_disposition",
+            context=action_context,
+            stage="post_tool",
+            resource=resource,
+        )
+        audit.append({"agent": DISPOSITION_AGENT, "action": "action_governance_decision",
+                      "resource": resource, "decision": d.action, "reason": d.reason,
+                      "entry_hash": None})
 
         policy_decision = {"allowed": bool(d.allowed), "action": d.action, "reason": d.reason,
                            "matched_rule": getattr(d, "matched_rule", None),
@@ -400,14 +483,14 @@ class GraphGovernor:
                               "trust_tier": getattr(ad, "trust_tier", None),
                               "matched_invariants": list(getattr(ad, "matched_invariants", []) or []),
                               "type": f"{type(ad).__module__}.{type(ad).__name__}" if ad is not None else None}
-        if not d.allowed:
-            status = "halted"
-        elif d.action == "require_approval" or merge.disposition == "ESCALATE":
+        if d.action == "require_approval" or merge.disposition == "ESCALATE":
             status = "escalated"
+        elif not d.allowed:
+            status = "halted"
         else:
             status = "committed"
         return GraphReview(outcome, self.agt_live, tuple(handoffs), attribution, authority_decision,
-                           policy_decision, status, tuple(audit))
+                           policy_decision, status, tuple(audit), tuple(content_checks), nemo_live)
 
 
 def govern_diamond(outcome: GraphOutcome, governor: GraphGovernor | None = None) -> GraphReview:

@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import sys
 from types import SimpleNamespace
+from typing import Callable
 
 from domain import (
     AgentAction,
@@ -27,10 +28,11 @@ from domain import (
     SecurityCheck,
     recompute_structuring,
 )
+from nemo_guardrails import NemoVerdict, nemo_check, summarize_nemo_checks
 
 
 AML_POLICY = """
-{"apiVersion":"governance.toolkit/v1","version":"1.0","name":"aml-runtime-chain","description":"Explicit authorization and post-run review policy for the AML chain.","agents":["*"],"scope":"global","default_action":"deny","rules":[{"name":"allow-authorized-chain-hop","description":"Allow only actions explicitly present in the agent delegation.","stage":"pre_tool","condition":"action.authorized","action":"allow","priority":100},{"name":"require-review-for-governance-failure","description":"A chain that fails record-relative governance requires human review.","stage":"post_tool","condition":"governance.failed","action":"require_approval","priority":100},{"name":"allow-record-relative-governance-pass","description":"Allow a chain whose final outcome matches the original records.","stage":"post_tool","condition":"governance.passed","action":"allow","priority":50}]}
+{"apiVersion":"governance.toolkit/v1","version":"1.0","name":"aml-runtime-chain","description":"Pre-agent authorization and final Action Governance over record-relative correctness and NeMo content signals.","agents":["*"],"scope":"global","default_action":"deny","rules":[{"name":"allow-authorized-chain-hop","description":"Allow only actions explicitly present in the agent delegation.","stage":"pre_tool","condition":"action.authorized","action":"allow","priority":100},{"name":"deny-unauthorized-final-action","description":"The final action requires successful deterministic authorization.","stage":"post_tool","condition":"action.status == 'unauthorized'","action":"deny","priority":200},{"name":"deny-record-relative-governance-failure","description":"Incorrect or corrupted AML decisions are denied by deterministic governance.","stage":"post_tool","condition":"governance.status == 'failed'","action":"deny","priority":150},{"name":"require-review-for-nemo-content-flag","description":"A NeMo content flag requires human approval.","stage":"post_tool","condition":"nemo.status == 'flagged'","action":"require_approval","priority":100},{"name":"allow-record-relative-and-content-pass","description":"Allow only when deterministic correctness, authorization, and NeMo content checks pass.","stage":"post_tool","condition":"action.status == 'authorized' and governance.status == 'passed' and nemo.status == 'passed'","action":"allow","priority":50},{"name":"allow-with-nemo-unavailable","description":"Allow when correctness and authorization pass while the UI explicitly reports NeMo unavailable.","stage":"post_tool","condition":"action.status == 'authorized' and governance.status == 'passed' and nemo.status == 'unavailable'","action":"allow","priority":40}]}
 """
 
 
@@ -72,14 +74,21 @@ class ToolkitGovernanceAdapter:
         if self.engine is None:
             # Keep the standalone demo usable with its original Streamlit
             # interpreter; the full toolkit path is used when installed.
-            allowed = (
-                bool(context.get("action", {}).get("authorized"))
-                if stage == "pre_tool"
-                else bool(context.get("governance", {}).get("passed"))
-            )
+            authorized = bool(context.get("action", {}).get("authorized"))
+            governance_passed = bool(context.get("governance", {}).get("passed"))
+            nemo_passed = bool(context.get("nemo", {}).get("passed", True))
+            if stage == "pre_tool":
+                allowed, action_name = authorized, "allow" if authorized else "deny"
+            elif not authorized or not governance_passed:
+                allowed, action_name = False, "deny"
+            elif not nemo_passed:
+                allowed, action_name = False, "require_approval"
+            else:
+                allowed, action_name = True, "allow"
             decision = SimpleNamespace(
                 allowed=allowed,
-                action="allow" if allowed else ("require_approval" if stage == "post_tool" else "deny"),
+                action=action_name,
+                reason="fallback Action Governance policy",
             )
             self.audit.append({"agent": agent, "action": action, "resource": resource, "decision": decision.action})
             return decision
@@ -265,6 +274,8 @@ class ChainSessionMetrics:
     security_intact_but_wrong: int = 0   # chains where every hop passed security but governance flagged
     governance_flags: int = 0
     security_flags: int = 0
+    nemo_flags: int = 0
+    nemo_unavailable: int = 0
 
     @property
     def context_pressure(self) -> float:
@@ -278,19 +289,57 @@ class ChainSessionMetrics:
 class ChainMonitor:
     """Evaluate each chain while retaining compact state across the full run."""
 
-    def __init__(self, context_window: int = 8, checkpoint_interval: int = 5) -> None:
+    def __init__(
+        self,
+        context_window: int = 8,
+        checkpoint_interval: int = 5,
+        content_checker: Callable[[str], NemoVerdict] = nemo_check,
+    ) -> None:
         self.metrics = ChainSessionMetrics(context_window, checkpoint_interval)
         self.toolkit = ToolkitGovernanceAdapter()
         self.security = SecurityLane(self.toolkit)
         self.governance = ChainGovernance()
+        self.content_checker = content_checker
 
     def evaluate(self, outcome: ChainOutcome) -> ChainReview:
-        sec = self.security.check(outcome.chain, outcome.alert.alert_id)
+        sec = []
+        content_checks: list[dict[str, object]] = []
+        for step in outcome.chain:
+            security_check = self.security.check((step,), outcome.alert.alert_id)[0]
+            sec.append(security_check)
+            if security_check.passed:
+                agent_output = (
+                    f"Agent: {step.agent}\nAction: {step.action_type}\n"
+                    f"Disposition: {step.disposition}\nEvidence amounts: {list(step.used_amounts)}"
+                )
+                verdict = self.content_checker(agent_output)
+            else:
+                verdict = {
+                    "passed": True,
+                    "rail": "skipped",
+                    "reason": "The deterministic authorization gate denied this step before execution.",
+                }
+            content_checks.append({"agent": step.agent, **verdict})
+
         gov = self.governance.check(outcome.alert, outcome.chain)
-        self.toolkit.evaluate(
+        nemo_signal, nemo_live = summarize_nemo_checks(content_checks)
+        nemo_failures = [check for check in content_checks if not check["passed"]]
+        nemo_unavailable = [check for check in content_checks if check["rail"] == "unavailable"]
+        decision = self.toolkit.evaluate(
             agent="aml-governance-monitor",
             action="aml_chain_review",
-            context={"governance": {"failed": not gov.passed, "passed": gov.passed}},
+            context={
+                "action": {
+                    "authorized": all(check.passed for check in sec),
+                    "status": "authorized" if all(check.passed for check in sec) else "unauthorized",
+                },
+                "governance": {
+                    "failed": not gov.passed,
+                    "passed": gov.passed,
+                    "status": "passed" if gov.passed else "failed",
+                },
+                "nemo": nemo_signal,
+            },
             stage="post_tool",
             resource=f"aml-alert:{outcome.alert.alert_id}",
         )
@@ -306,7 +355,26 @@ class ChainMonitor:
             m.security_flags += 1
         if not gov.passed:
             m.governance_flags += 1
+        if nemo_failures:
+            m.nemo_flags += 1
+        if nemo_unavailable:
+            m.nemo_unavailable += 1
         if all_security_passed and not gov.passed:
             m.security_intact_but_wrong += 1
         from domain import ChainReview as _CR  # local import avoids cycle at module import
-        return _CR(outcome=outcome, security=tuple(sec), governance=gov)
+        action_decision = {
+            "allowed": bool(decision.allowed),
+            "action": decision.action,
+            "reason": getattr(decision, "reason", ""),
+            "matched_rule": getattr(decision, "matched_rule", None),
+            "policy_name": getattr(decision, "policy_name", None),
+        }
+        return _CR(
+            outcome=outcome,
+            security=tuple(sec),
+            governance=gov,
+            content_checks=tuple(content_checks),
+            action_decision=action_decision,
+            agt_live=self.toolkit.engine is not None,
+            nemo_live=nemo_live,
+        )
