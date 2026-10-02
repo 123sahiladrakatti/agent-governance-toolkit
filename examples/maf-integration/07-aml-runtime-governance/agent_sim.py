@@ -171,3 +171,131 @@ def run_chain_session(count: int = 40, seed: int = 7) -> list[ChainOutcome]:
         outcomes.append(ChainOutcome(alert=alert, chain=chain, corrupt=corrupt,
                                      is_star_case=(index == star_index), fault=fault))
     return outcomes
+
+# ---------------------------------------------------------------------------
+# Fan-out / fan-in diamond (additive; the linear chain above is unchanged).
+#
+#           +-> B customer-screening   --+
+#   A intake+-> C transaction-analysis --+-> E decision
+#           +-> D kyc-entity           --+
+#
+# B, C and D each read the alert records independently. E only sees what the
+# three branches report and merges them. A misread in one branch is masked by
+# its correct, clean siblings.
+# ---------------------------------------------------------------------------
+from dataclasses import replace as _replace
+
+from domain import (
+    GraphOutcome,
+    GraphStep,
+    merge_disposition,
+    recompute_kyc,
+    recompute_sanctions,
+)
+
+TRIAGE_AGENT = "intake"
+SANCTIONS_AGENT = "customer-screening"
+TRANSACTION_AGENT = "transaction-analysis"
+KYC_AGENT = "kyc-entity"
+DISPOSITION_AGENT = "decision"
+
+DIAMOND_NODE_ID = {TRIAGE_AGENT: "A", SANCTIONS_AGENT: "B", TRANSACTION_AGENT: "C", KYC_AGENT: "D", DISPOSITION_AGENT: "E"}
+DIAMOND_BRANCHES = (SANCTIONS_AGENT, TRANSACTION_AGENT, KYC_AGENT)
+# Declared topology: who each agent is permitted to receive from.
+DIAMOND_PARENTS = {
+    TRIAGE_AGENT: (),
+    SANCTIONS_AGENT: (TRIAGE_AGENT,),
+    TRANSACTION_AGENT: (TRIAGE_AGENT,),
+    KYC_AGENT: (TRIAGE_AGENT,),
+    DISPOSITION_AGENT: DIAMOND_BRANCHES,
+}
+DIAMOND_ALLOWED = {
+    TRIAGE_AGENT: frozenset({"fan_out_alert"}),
+    SANCTIONS_AGENT: frozenset({"screen_sanctions"}),
+    TRANSACTION_AGENT: frozenset({"analyze_transactions", "review_records"}),
+    KYC_AGENT: frozenset({"verify_kyc"}),
+    DISPOSITION_AGENT: frozenset({"merge_disposition"}),
+}
+DIAMOND_ACTION = {
+    TRIAGE_AGENT: "fan_out_alert",
+    SANCTIONS_AGENT: "screen_sanctions",
+    TRANSACTION_AGENT: "analyze_transactions",
+    KYC_AGENT: "verify_kyc",
+    DISPOSITION_AGENT: "merge_disposition",
+}
+MISREAD_BRANCH = "misread-branch"
+
+
+def _misread(amounts: tuple[float, ...]) -> tuple[float, ...]:
+    """Same misread as the linear transitive-corruption fault: first deposit read as $2,900."""
+    if not amounts:
+        return amounts
+    return tuple(2_900.0 if a == amounts[0] else a * 0.5 for a in amounts)
+
+
+def _graph_step(agent: str, finding: str, flagged: bool, alert: Alert, **extra) -> GraphStep:
+    return GraphStep(
+        agent=agent, node_id=DIAMOND_NODE_ID[agent], action_type=DIAMOND_ACTION[agent],
+        allowed_actions=DIAMOND_ALLOWED[agent], received_from=DIAMOND_PARENTS[agent],
+        finding=finding, flagged=flagged, acted_account_id=alert.account_id, **extra,
+    )
+
+
+def build_diamond(alert: Alert, faulted_branch: str | None = None) -> tuple[GraphStep, ...]:
+    """Run one alert through the A -> (B, C, D) -> E diamond.
+
+    ``faulted_branch`` may be ``TRANSACTION_AGENT`` (or ``"C"``) to plant the
+    misread: C reads the deposits wrongly, reports "not-structuring", and E merges
+    it with clean B and D into a confident CLEAR. Every action stays in-permission.
+    """
+    if faulted_branch == "C":
+        faulted_branch = TRANSACTION_AGENT
+    if faulted_branch not in (None, TRANSACTION_AGENT):
+        raise ValueError(f"unsupported faulted_branch: {faulted_branch!r}")
+
+    a = _graph_step(TRIAGE_AGENT, f"routed {alert.alert_id} to 3 branches", False, alert)
+
+    sanctions = recompute_sanctions(alert)
+    b = _graph_step(SANCTIONS_AGENT, sanctions.finding, sanctions.flagged, alert)
+
+    truth = recompute_structuring(alert)
+    used = _misread(truth.qualifying_amounts) if faulted_branch == TRANSACTION_AGENT else truth.qualifying_amounts
+    c_disposition = _disposition_for(used)
+    c_flagged = c_disposition == "FILE_SAR"
+    c = _graph_step(TRANSACTION_AGENT, "structuring" if c_flagged else "not-structuring", c_flagged, alert,
+                    used_amounts=used, used_aggregate=sum(used), disposition=c_disposition)
+
+    kyc = recompute_kyc(alert)
+    d = _graph_step(KYC_AGENT, kyc.finding, kyc.flagged, alert)
+
+    # E trusts its three parents verbatim (no re-reading of records).
+    branches = (b, c, d)
+    merged = merge_disposition(b.flagged, c.flagged, d.flagged)
+    clean = sum(not s.flagged for s in branches)
+    e = _graph_step(
+        DISPOSITION_AGENT, f"{merged} ({clean}/3 branches clean)", merged != "CLEAR", alert,
+        used_amounts=c.used_amounts, used_aggregate=c.used_aggregate, disposition=merged,
+        received_amounts_by_parent={s.agent: s.used_amounts for s in branches},
+        received_findings_by_parent={s.agent: s.finding for s in branches},
+    )
+    return (a, b, c, d, e)
+
+
+def run_diamond_session(count: int = 40, seed: int = 7) -> list[GraphOutcome]:
+    """A batch of diamonds over the same synthetic alerts as the chain session.
+
+    One planted misread-branch case sits at a fixed index (6, clamped). Its first
+    deposit is pinned to $9,200 so the narrated misread reads "$9,200 as $2,900".
+    """
+    alerts = generate_alerts(count, seed)
+    star_index = min(6, count - 1)
+    star = alerts[star_index]
+    if star.transactions and star.transactions[0].type == "cash_deposit":
+        first = _replace(star.transactions[0], amount=9_200.0)
+        alerts[star_index] = _replace(star, transactions=(first,) + star.transactions[1:])
+    outcomes: list[GraphOutcome] = []
+    for index, alert in enumerate(alerts):
+        fault = MISREAD_BRANCH if index == star_index else None
+        steps = build_diamond(alert, TRANSACTION_AGENT if fault else None)
+        outcomes.append(GraphOutcome(alert=alert, steps=steps, is_star_case=(index == star_index), fault=fault))
+    return outcomes

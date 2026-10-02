@@ -6,7 +6,7 @@ chain used to demonstrate transitive corruption with origin attribution.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Literal
 
@@ -237,3 +237,110 @@ class GatedRun:
     reason: str
     fault: str | None                  # the planted fault label (for the demo)
     consequential_prevented: bool      # True if a harmful downstream step was stopped
+
+# ---------------------------------------------------------------------------
+# Graph topology (fan-out / fan-in diamond). Additive: the linear ChainStep path
+# above is unchanged. A GraphStep may have several parents, so fan-in provenance
+# is kept per parent rather than as a single received_from string.
+# ---------------------------------------------------------------------------
+SANCTIONS_WATCHLIST = frozenset({"Viktor Petrov Holdings", "Al-Noor Exchange", "Northwind Shell Co"})
+
+
+@dataclass(frozen=True)
+class GraphStep:
+    """One node in a fan-out/fan-in investigation graph."""
+
+    agent: str
+    node_id: str                         # "A".."E" (display label)
+    action_type: str
+    allowed_actions: frozenset[str]
+    received_from: tuple[str, ...]       # upstream agents (empty for the root)
+    finding: str                         # what this node reported, e.g. "no-hit", "not-structuring"
+    flagged: bool                        # does this node's finding raise a concern?
+    used_amounts: tuple[float, ...] = ()
+    used_aggregate: float = 0.0
+    disposition: Disposition | None = None    # only the merge node disposes
+    acted_account_id: str | None = None
+    received_amounts_by_parent: dict[str, tuple[float, ...]] = field(default_factory=dict)
+    received_findings_by_parent: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class GraphOutcome:
+    """Result of running one alert through the diamond graph."""
+
+    alert: Alert
+    steps: tuple[GraphStep, ...]
+    is_star_case: bool = False
+    fault: str | None = None
+
+    def step(self, agent: str) -> GraphStep:
+        return next(s for s in self.steps if s.agent == agent)
+
+    @property
+    def edges(self) -> tuple[tuple[str, str], ...]:
+        return tuple((parent, s.agent) for s in self.steps for parent in s.received_from)
+
+
+@dataclass(frozen=True)
+class BranchFinding:
+    """A branch's correct finding, recomputed from the alert records alone."""
+
+    finding: str
+    flagged: bool
+    detail: str
+
+
+def recompute_sanctions(alert: Alert) -> BranchFinding:
+    hit = alert.customer.name in SANCTIONS_WATCHLIST
+    return BranchFinding("hit" if hit else "no-hit", hit,
+                         f"'{alert.customer.name}' {'is' if hit else 'is not'} on the sanctions watchlist")
+
+
+def recompute_kyc(alert: Alert) -> BranchFinding:
+    c = alert.customer
+    complete = bool(c.name and c.stated_occupation and c.expected_monthly_cash_volume > 0)
+    return BranchFinding("verified" if complete else "incomplete", not complete,
+                         f"profile on file: {c.stated_occupation}, expected ${c.expected_monthly_cash_volume:,.0f}/mo cash")
+
+
+def recompute_transactions(alert: Alert) -> BranchFinding:
+    truth = recompute_structuring(alert)
+    return BranchFinding("structuring" if truth.is_structuring else "not-structuring", truth.is_structuring,
+                         f"{truth.qualifying_count} sub-threshold cash deposits totalling ${truth.aggregate:,.0f}")
+
+
+def merge_disposition(sanctions_flagged: bool, transactions_flagged: bool, kyc_flagged: bool) -> Disposition:
+    """The fan-in merge rule the disposition agent applies to its branch inputs."""
+    if sanctions_flagged or transactions_flagged:
+        return "FILE_SAR"
+    if kyc_flagged:
+        return "ESCALATE"
+    return "CLEAR"
+
+
+@dataclass(frozen=True)
+class BranchCheck:
+    """Record-relative check of one node in the graph."""
+
+    agent: str
+    node_id: str
+    reported: str
+    recomputed: str
+    matches: bool
+    detail: str
+
+
+@dataclass(frozen=True)
+class GraphAttribution:
+    """Governance verdict over a diamond, with branch-level attribution."""
+
+    passed: bool
+    category: str | None
+    origin_agent: str | None
+    origin_node: str | None
+    masked_by: tuple[str, ...]           # sibling branches whose clean results hid the bad one
+    reason: str
+    branch_checks: tuple[BranchCheck, ...]
+    merged_disposition: str
+    expected_disposition: str
