@@ -1,60 +1,69 @@
-"""Cheap deterministic runtime governance lanes for the AML agent demo.
+"""Runtime governance pipeline for the AML agent architecture.
 
-Two lanes, both LLM-free and record-relative:
-  * Security lane   - was each hop authorized? (permission only)
-  * Governance lane - is the chain's outcome correct vs the original records,
-                      and if not, which agent originated the error?
+The module models governance in order:
+1. Deterministic pre-agent authorization through AGT policy.
+2. NeMo content monitoring on each authorized output during agent work.
+3. Final AGT Action Governance over authorization, correctness, and content.
 
-The single-decision checkers (RegularGovernance / EnhancedGovernance) are kept
-for reference and the 2-agent path; the chain checkers add multi-hop attribution.
+The behavioral checker owns AML correctness. NeMo is only a content signal
+producer, not an AGT AuthorityResolver or final decision-maker.
 """
 
 from __future__ import annotations
 
+import json
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-import sys
 from types import SimpleNamespace
-from typing import Callable
+from typing import Callable, Sequence
 
 from domain import (
-    AgentAction,
     Alert,
     ChainAttribution,
     ChainOutcome,
     ChainReview,
     ChainStep,
-    GovernanceVerdict,
     SecurityCheck,
     recompute_structuring,
 )
 from nemo_guardrails import NemoVerdict, nemo_check, summarize_nemo_checks
 
 
-AML_POLICY = """
-{"apiVersion":"governance.toolkit/v1","version":"1.0","name":"aml-runtime-chain","description":"Pre-agent authorization and final Action Governance over record-relative correctness and NeMo content signals.","agents":["*"],"scope":"global","default_action":"deny","rules":[{"name":"allow-authorized-chain-hop","description":"Allow only actions explicitly present in the agent delegation.","stage":"pre_tool","condition":"action.authorized","action":"allow","priority":100},{"name":"deny-unauthorized-final-action","description":"The final action requires successful deterministic authorization.","stage":"post_tool","condition":"action.status == 'unauthorized'","action":"deny","priority":200},{"name":"deny-record-relative-governance-failure","description":"Incorrect or corrupted AML decisions are denied by deterministic governance.","stage":"post_tool","condition":"governance.status == 'failed'","action":"deny","priority":150},{"name":"require-review-for-nemo-content-flag","description":"A NeMo content flag requires human approval.","stage":"post_tool","condition":"nemo.status == 'flagged'","action":"require_approval","priority":100},{"name":"allow-record-relative-and-content-pass","description":"Allow only when deterministic correctness, authorization, and NeMo content checks pass.","stage":"post_tool","condition":"action.status == 'authorized' and governance.status == 'passed' and nemo.status == 'passed'","action":"allow","priority":50},{"name":"allow-with-nemo-unavailable","description":"Allow when correctness and authorization pass while the UI explicitly reports NeMo unavailable.","stage":"post_tool","condition":"action.status == 'authorized' and governance.status == 'passed' and nemo.status == 'unavailable'","action":"allow","priority":40}]}
-"""
+AML_POLICY = json.dumps({
+    "apiVersion": "governance.toolkit/v1",
+    "version": "1.0",
+    "name": "aml-runtime-governance",
+    "description": "Deterministic entry gates and final action decisions for the AML pipeline.",
+    "agents": ["*"],
+    "scope": "global",
+    "default_action": "deny",
+    "rules": [
+        {"name": "allow-authorized-agent-step", "description": "Only delegated agent actions may run.",
+         "stage": "pre_tool", "condition": "action.authorized", "action": "allow", "priority": 100},
+        {"name": "deny-unauthorized-final-action", "description": "The final action must be authorized.",
+         "stage": "post_tool", "condition": "action.status == 'unauthorized'", "action": "deny", "priority": 200},
+        {"name": "deny-incorrect-record-relative-result", "description": "Incorrect results fail deterministic governance.",
+         "stage": "post_tool", "condition": "governance.status == 'failed'", "action": "deny", "priority": 150},
+        {"name": "require-review-for-nemo-content-flag", "description": "A NeMo content flag requires human review.",
+         "stage": "post_tool", "condition": "nemo.status == 'flagged'", "action": "require_approval", "priority": 100},
+        {"name": "allow-verified-action", "description": "Authorization, correctness, and NeMo content checks passed.",
+         "stage": "post_tool",
+         "condition": "action.status == 'authorized' and governance.status == 'passed' and nemo.status == 'passed'",
+         "action": "allow", "priority": 50},
+        {"name": "allow-verified-action-with-nemo-unavailable", "description": "Deterministic checks pass; NeMo unavailability remains visible.",
+         "stage": "post_tool",
+         "condition": "action.status == 'authorized' and governance.status == 'passed' and nemo.status == 'unavailable'",
+         "action": "allow", "priority": 40},
+    ],
+})
 
 
 class ToolkitGovernanceAdapter:
-    """Apply Agent Governance Toolkit policy and append-only audit logging."""
+    """Load AGT's PolicyEngine and AuditLog, with a deterministic local fallback."""
 
     def __init__(self, policy_text: str = AML_POLICY) -> None:
-        toolkit = None
-        try:
-            from agentmesh.governance import AuditLog, PolicyEngine
-            toolkit = (AuditLog, PolicyEngine)
-        except ImportError as exc:
-            source_root = Path(__file__).resolve().parents[3]
-            local_source = source_root / "agent-governance-python" / "agent-mesh" / "src"
-            if local_source.is_dir():
-                sys.path.insert(0, str(local_source))
-                try:
-                    from agentmesh.governance import AuditLog, PolicyEngine
-                    toolkit = (AuditLog, PolicyEngine)
-                except ImportError:
-                    pass
-
+        toolkit = self._import_toolkit()
         self.engine = None
         self.audit = []
         if toolkit is not None:
@@ -63,34 +72,61 @@ class ToolkitGovernanceAdapter:
             self.engine.load_json(policy_text)
             self.audit = audit_log()
 
-    def evaluate(
-        self,
-        agent: str,
-        action: str,
-        context: dict[str, object],
-        stage: str,
-        resource: str,
-    ):
-        if self.engine is None:
-            # Keep the standalone demo usable with its original Streamlit
-            # interpreter; the full toolkit path is used when installed.
-            authorized = bool(context.get("action", {}).get("authorized"))
-            governance_passed = bool(context.get("governance", {}).get("passed"))
-            nemo_passed = bool(context.get("nemo", {}).get("passed", True))
-            if stage == "pre_tool":
-                allowed, action_name = authorized, "allow" if authorized else "deny"
-            elif not authorized or not governance_passed:
-                allowed, action_name = False, "deny"
-            elif not nemo_passed:
-                allowed, action_name = False, "require_approval"
-            else:
-                allowed, action_name = True, "allow"
-            decision = SimpleNamespace(
-                allowed=allowed,
-                action=action_name,
-                reason="fallback Action Governance policy",
+    @staticmethod
+    def _import_toolkit():
+        try:
+            from agentmesh.governance import AuditLog, PolicyEngine
+            return AuditLog, PolicyEngine
+        except ImportError:
+            local_source = (
+                Path(__file__).resolve().parents[3]
+                / "agent-governance-python" / "agent-mesh" / "src"
             )
-            self.audit.append({"agent": agent, "action": action, "resource": resource, "decision": decision.action})
+            if not local_source.is_dir():
+                return None
+            sys.path.insert(0, str(local_source))
+            try:
+                from agentmesh.governance import AuditLog, PolicyEngine
+                return AuditLog, PolicyEngine
+            except ImportError:
+                return None
+
+    @staticmethod
+    def _fallback_decision(context: dict[str, object], stage: str):
+        action = context.get("action", {})
+        governance = context.get("governance", {})
+        nemo = context.get("nemo", {})
+        authorized = bool(action.get("authorized"))
+
+        if stage == "pre_tool":
+            allowed = authorized
+            result = "allow" if allowed else "deny"
+            rule = "allow-authorized-agent-step" if allowed else None
+        elif action.get("status") == "unauthorized":
+            allowed, result, rule = False, "deny", "deny-unauthorized-final-action"
+        elif governance.get("status") == "failed":
+            allowed, result, rule = False, "deny", "deny-incorrect-record-relative-result"
+        elif nemo.get("status") == "flagged":
+            allowed, result, rule = False, "require_approval", "require-review-for-nemo-content-flag"
+        elif nemo.get("status") in {"passed", "unavailable"} and governance.get("status") == "passed" and authorized:
+            allowed, result = True, "allow"
+            rule = "allow-verified-action" if nemo.get("status") == "passed" else "allow-verified-action-with-nemo-unavailable"
+        else:
+            allowed, result, rule = False, "deny", None
+
+        return SimpleNamespace(
+            allowed=allowed, action=result, matched_rule=rule,
+            policy_name="aml-runtime-governance",
+            reason=rule or "No matching rule; default deny", evaluation_ms=0.0,
+        )
+
+    def evaluate(self, agent: str, action: str, context: dict[str, object], stage: str, resource: str):
+        if self.engine is None:
+            decision = self._fallback_decision(context, stage)
+            self.audit.append({
+                "agent": agent, "action": action, "resource": resource,
+                "decision": decision.action, "matched_rule": decision.matched_rule,
+            })
             return decision
 
         decision = self.engine.evaluate(agent, context, stage=stage)
@@ -98,126 +134,70 @@ class ToolkitGovernanceAdapter:
             event_type="policy_evaluation", agent_did=agent, action=action,
             resource=resource, data=context,
             outcome="success" if decision.allowed else "denied",
-            policy_decision=decision.action, policy_version="aml-runtime-chain@1.0",
+            policy_decision=decision.action, policy_version="aml-runtime-governance@1.0",
         )
         return decision
 
 
-# ---------------------------------------------------------------------------
-# Single-decision lanes (unchanged; used by the 2-agent path)
-# ---------------------------------------------------------------------------
-class RegularGovernance:
-    """Check permission and access only; intentionally ignores semantic correctness."""
-
-    def check(self, action: AgentAction, alert: Alert) -> GovernanceVerdict:
-        if action.action_type not in action.delegation.allowed_actions:
-            return GovernanceVerdict(False, "mis-delegation", action.responsible_agent, action.step, "Tool/action is outside the triage delegation.", {"allowed_actions": sorted(action.delegation.allowed_actions), "action_type": action.action_type})
-        if action.delegation.data_access_scope != "portfolio":
-            return GovernanceVerdict(False, "mis-delegation", action.responsible_agent, action.step, "Account data is outside the delegated access scope.", {"scope": action.delegation.data_access_scope})
-        return GovernanceVerdict(True, None, action.responsible_agent, action.step, "Authorized action and portfolio data access.", {"action_type": action.action_type})
-
-
-class EnhancedGovernance:
-    """Recompute record-relative truth and compare it with the permitted action."""
-
-    def check(self, action: AgentAction, alert: Alert) -> GovernanceVerdict:
-        actual = recompute_structuring(alert)
-        if action.acted_account_id != alert.account_id:
-            return GovernanceVerdict(False, "wrong-target", action.responsible_agent, action.step, f"Agent acted on {action.acted_account_id}; alert belongs to {alert.account_id}.", {})
-        if action.action_type not in action.delegation.allowed_actions:
-            return GovernanceVerdict(False, "mis-delegation", action.responsible_agent, action.step, f"Agent recorded {action.action_type}; triage delegated only {', '.join(sorted(action.delegation.allowed_actions))}.", {})
-        if tuple(action.claimed_amounts) != actual.qualifying_amounts or action.claimed_threshold != actual.threshold:
-            reason = f"Agent claimed amounts {list(action.claimed_amounts)}; record amounts are {list(actual.qualifying_amounts)}."
-            return GovernanceVerdict(False, "semantic-drift", action.responsible_agent, action.step, reason, {})
-        expected = "FILE_SAR" if actual.is_structuring else "CLEAR"
-        if action.disposition != expected or (action.disposition == "FILE_SAR" and not action.sar_record_id) or (action.disposition == "CLEAR" and actual.is_structuring):
-            return GovernanceVerdict(False, "false-completion", action.responsible_agent, action.step, f"Agent reported {action.disposition_status}, but records recompute to {expected}.", {})
-        return GovernanceVerdict(True, None, action.responsible_agent, action.step, f"Record-relative evidence supports {expected}.", {})
-
-
-# ---------------------------------------------------------------------------
-# Chain lanes (multi-hop: security per hop + governance with origin attribution)
-# ---------------------------------------------------------------------------
 class SecurityLane:
-    """Per-hop authorization. This is the 'security intact' view: every hop is
-    checked in isolation against what that agent was permitted to do."""
+    """Top deterministic gate: check each agent action before content monitoring."""
 
     def __init__(self, toolkit: ToolkitGovernanceAdapter | None = None) -> None:
         self.toolkit = toolkit
 
-    def check(self, chain: tuple[ChainStep, ...], alert_id: str = "unknown") -> tuple[SecurityCheck, ...]:
+    def check(self, chain: Sequence[ChainStep], alert_id: str = "unknown") -> tuple[SecurityCheck, ...]:
         checks = []
         for step in chain:
-            permitted = step.action_type in step.allowed_actions
+            authorized = step.action_type in step.allowed_actions
+            reason = (
+                f"{step.agent} performed '{step.action_type}', within its delegated actions."
+                if authorized else
+                f"{step.agent} performed '{step.action_type}', outside its delegated actions."
+            )
             if self.toolkit is not None:
                 policy = self.toolkit.evaluate(
-                    agent=step.agent,
-                    action=step.action_type,
-                    context={
-                        "action": {
-                            "type": "aml_chain_handoff",
-                            "authorized": permitted,
-                        },
-                        "agent": {"step": step.step_index},
-                    },
-                    stage="pre_tool",
-                    resource=f"aml-alert:{alert_id}",
+                    agent=step.agent, action=step.action_type,
+                    context={"action": {"type": step.action_type, "authorized": authorized},
+                             "agent": {"step": step.step_index}},
+                    stage="pre_tool", resource=f"aml-alert:{alert_id}",
                 )
-                permitted = permitted and policy.allowed
-            reason = (f"{step.agent} performed '{step.action_type}', which is within its permitted actions."
-                      if permitted else
-                      f"{step.agent} performed '{step.action_type}', outside its permitted actions.")
-            checks.append(SecurityCheck(step.agent, step.step_index, permitted, reason))
-        return checks
+                authorized = authorized and bool(policy.allowed)
+                if not authorized:
+                    reason = getattr(policy, "reason", "AGT deterministic gate denied the action.")
+            checks.append(SecurityCheck(step.agent, step.step_index, authorized, reason))
+        return tuple(checks)
 
 
 class ChainGovernance:
-    """Governance over a whole chain.
+    """Deterministic correctness check against the original transaction records."""
 
-    Recomputes the correct outcome from the ORIGINAL records, and if the chain's
-    final disposition contradicts it, walks the provenance backward to attribute
-    the error to the agent that first diverged from the records (the origin),
-    distinguishing it from downstream agents that merely trusted and forwarded
-    the bad value (the propagators). No LLM calls; pure record-relative arithmetic.
-    """
+    def check(self, alert: Alert, chain: Sequence[ChainStep]) -> ChainAttribution:
+        if not chain:
+            raise ValueError("A chain must contain at least one agent step.")
 
-    def check(self, alert: Alert, chain: tuple[ChainStep, ...]) -> ChainAttribution:
         truth = recompute_structuring(alert)
         final = chain[-1]
         expected = "FILE_SAR" if truth.is_structuring else "CLEAR"
 
-        # --- New distinct fault classes (checked before the corruption/outcome check) ---
-        # 1) Wrong-target: an agent acted on an account other than the alert's.
         for step in chain:
-            acted = getattr(step, "acted_account_id", None)
-            if acted is not None and acted != alert.account_id:
-                reason = (f"{step.agent} at step {step.step_index} acted on account {acted}, "
-                          f"but the alert belongs to {alert.account_id}. Authorized to access accounts, "
-                          f"but the wrong entity - the decision does not concern this alert.")
-                return ChainAttribution(False, "wrong-target", step.agent, step.step_index, (), reason,
-                                        truth.qualifying_amounts, truth.aggregate, truth.is_structuring,
-                                        final.disposition, expected)
-        # 2) Scope / mis-delegation: an agent took an action outside its allowed_actions.
-        #    (The security lane also catches this - the overlap is intentional.)
+            acted_account = getattr(step, "acted_account_id", None)
+            if acted_account is not None and acted_account != alert.account_id:
+                reason = f"{step.agent} at step {step.step_index} acted on {acted_account}; alert belongs to {alert.account_id}."
+                return self._failed("wrong-target", step, reason, truth, final, expected)
+
         for step in chain:
             if step.action_type not in step.allowed_actions:
-                reason = (f"{step.agent} at step {step.step_index} performed '{step.action_type}', "
-                          f"which is outside its delegated actions "
-                          f"({', '.join(sorted(step.allowed_actions))}). Action taken beyond granted authority.")
-                return ChainAttribution(False, "mis-delegation", step.agent, step.step_index, (), reason,
-                                        truth.qualifying_amounts, truth.aggregate, truth.is_structuring,
-                                        final.disposition, expected)
-        # 3) Conflict: two agents recorded contradictory dispositions for the same alert.
-        dispositions = {step.step_index: step.disposition for step in chain}
-        if len(set(dispositions.values())) > 1:
-            disagreeing = ", ".join(f"{s.agent}->{s.disposition}" for s in chain)
-            reason = (f"Agents disagree on the disposition with no reconciliation ({disagreeing}). "
-                      f"Two authorized agents reached contradictory conclusions for one alert.")
-            first_disp = chain[0].disposition
-            culprit = next((s for s in chain if s.disposition != first_disp), chain[-1])
-            return ChainAttribution(False, "conflict", culprit.agent, culprit.step_index, (), reason,
-                                    truth.qualifying_amounts, truth.aggregate, truth.is_structuring,
-                                    final.disposition, expected)
+                reason = (f"{step.agent} at step {step.step_index} performed '{step.action_type}', outside "
+                          f"delegated actions ({', '.join(sorted(step.allowed_actions))}).")
+                return self._failed("mis-delegation", step, reason, truth, final, expected)
+
+        if len({step.disposition for step in chain}) > 1:
+            first = chain[0].disposition
+            culprit = next((step for step in chain if step.disposition != first), chain[-1])
+            disagreements = ", ".join(f"{step.agent}->{step.disposition}" for step in chain)
+            return self._failed("conflict", culprit,
+                                f"Agents produced contradictory dispositions without reconciliation: {disagreements}.",
+                                truth, final, expected)
 
         if final.disposition == expected:
             return ChainAttribution(
@@ -225,53 +205,104 @@ class ChainGovernance:
                 reason=(f"End-to-end outcome '{final.disposition}' matches the records: "
                         f"${truth.aggregate:,.0f} across {truth.qualifying_count} sub-threshold deposits."),
                 record_amounts=truth.qualifying_amounts, record_aggregate=truth.aggregate,
-                is_structuring=truth.is_structuring, final_disposition=final.disposition, expected_disposition=expected,
+                is_structuring=truth.is_structuring, final_disposition=final.disposition,
+                expected_disposition=expected,
             )
 
-        # Outcome is wrong. Find the first hop whose used value diverged from its source of truth.
-        origin = None
-        for step in chain:
-            if step.received_from is None:
-                # The record reader: compare against the actual records.
-                if tuple(step.used_amounts) != truth.qualifying_amounts:
-                    origin = step
-                    break
-            else:
-                # A propagator: it only originates error if it altered what it received.
-                if tuple(step.used_amounts) != tuple(step.received_amounts or ()):
-                    origin = step
-                    break
-        if origin is None:
-            origin = chain[0]
-
+        origin = self._find_origin(chain, truth.qualifying_amounts) or chain[0]
         propagators = tuple(step.agent for step in chain if step.step_index > origin.step_index)
-        prop_text = ", ".join(propagators) if propagators else "none"
         reason = (
-            f"Final disposition '{final.disposition}' contradicts the records "
-            f"(recomputed ${truth.aggregate:,.0f} across {truth.qualifying_count} sub-threshold deposits, "
-            f"which requires '{expected}'). Walking the delegation chain back: {origin.agent} at step "
-            f"{origin.step_index} used {[round(x) for x in origin.used_amounts]} while the records show "
-            f"{[round(x) for x in truth.qualifying_amounts]}. Downstream agents ({prop_text}) trusted and "
-            f"forwarded this value without re-checking it."
+            f"Final disposition '{final.disposition}' contradicts the records (recomputed "
+            f"${truth.aggregate:,.0f}, requiring '{expected}'). {origin.agent} at step "
+            f"{origin.step_index} first diverged from record-relative evidence; downstream agents "
+            f"({', '.join(propagators) or 'none'}) propagated that result."
         )
         return ChainAttribution(
-            passed=False, category="transitive-corruption", origin_agent=origin.agent, origin_step=origin.step_index,
-            propagators=propagators, reason=reason, record_amounts=truth.qualifying_amounts,
+            passed=False, category="transitive-corruption", origin_agent=origin.agent,
+            origin_step=origin.step_index, propagators=propagators, reason=reason,
+            record_amounts=truth.qualifying_amounts, record_aggregate=truth.aggregate,
+            is_structuring=truth.is_structuring, final_disposition=final.disposition,
+            expected_disposition=expected,
+        )
+
+    @staticmethod
+    def _find_origin(chain: Sequence[ChainStep], record_amounts: tuple[float, ...]) -> ChainStep | None:
+        for step in chain:
+            if step.received_from is None and tuple(step.used_amounts) != record_amounts:
+                return step
+            if step.received_from is not None and tuple(step.used_amounts) != tuple(step.received_amounts or ()):
+                return step
+        return None
+
+    @staticmethod
+    def _failed(category, step, reason, truth, final, expected) -> ChainAttribution:
+        return ChainAttribution(
+            passed=False, category=category, origin_agent=step.agent, origin_step=step.step_index,
+            propagators=(), reason=reason, record_amounts=truth.qualifying_amounts,
             record_aggregate=truth.aggregate, is_structuring=truth.is_structuring,
             final_disposition=final.disposition, expected_disposition=expected,
         )
 
 
+class AgentContentMonitor:
+    """Middle-layer monitor: inspect output content, not the correctness of AML decisions."""
+
+    def __init__(self, check_output: Callable[[str], NemoVerdict] = nemo_check) -> None:
+        self.check_output = check_output
+
+    def check(self, step: ChainStep, authorized: bool) -> dict[str, object]:
+        if not authorized:
+            verdict: NemoVerdict = {
+                "passed": True, "rail": "skipped",
+                "reason": "The deterministic top gate denied this step before execution.",
+            }
+        else:
+            output = (
+                f"Agent: {step.agent}\nAction: {step.action_type}\n"
+                f"Disposition: {step.disposition}\nEvidence amounts: {list(step.used_amounts)}"
+            )
+            verdict = self.check_output(output)
+        return {"agent": step.agent, **verdict}
+
+
+class ActionGovernance:
+    """Bottom stage: let AGT consume signals and produce the final PolicyDecision."""
+
+    def __init__(self, toolkit: ToolkitGovernanceAdapter) -> None:
+        self.toolkit = toolkit
+
+    def decide(self, agent: str, action: str, resource: str, authorized: bool,
+               correctness: ChainAttribution, nemo: dict[str, object],
+               capabilities: Sequence[str] = ()) -> dict[str, object]:
+        context = {
+            "action": {"type": action, "authorized": authorized,
+                       "status": "authorized" if authorized else "unauthorized"},
+            "governance": {"passed": correctness.passed,
+                           "status": "passed" if correctness.passed else "failed"},
+            "nemo": nemo,
+            "resource": resource,
+            "capabilities": list(capabilities),
+        }
+        decision = self.toolkit.evaluate(agent, action, context, "post_tool", resource)
+        return {
+            "allowed": bool(decision.allowed), "action": decision.action,
+            "reason": getattr(decision, "reason", ""),
+            "matched_rule": getattr(decision, "matched_rule", None),
+            "policy_name": getattr(decision, "policy_name", None),
+            "evaluation_ms": getattr(decision, "evaluation_ms", None),
+        }
+
+
 @dataclass
 class ChainSessionMetrics:
-    """Bounded state retained across a long-running chain session."""
+    """Bounded aggregate state retained across pipeline evaluations."""
 
     context_window: int = 8
     checkpoint_interval: int = 5
     turns: int = 0
     retained_alerts: list[str] = field(default_factory=list)
     checkpoints: list[int] = field(default_factory=list)
-    security_intact_but_wrong: int = 0   # chains where every hop passed security but governance flagged
+    security_intact_but_wrong: int = 0
     governance_flags: int = 0
     security_flags: int = 0
     nemo_flags: int = 0
@@ -286,95 +317,66 @@ class ChainSessionMetrics:
         return len(self.retained_alerts)
 
 
-class ChainMonitor:
-    """Evaluate each chain while retaining compact state across the full run."""
+class AMLRuntimeGovernance:
+    """Compose the architecture's top gate, middle monitor, and bottom decision."""
 
-    def __init__(
-        self,
-        context_window: int = 8,
-        checkpoint_interval: int = 5,
-        content_checker: Callable[[str], NemoVerdict] = nemo_check,
-    ) -> None:
+    def __init__(self, context_window: int = 8, checkpoint_interval: int = 5,
+                 content_checker: Callable[[str], NemoVerdict] = nemo_check) -> None:
+        if context_window < 1 or checkpoint_interval < 1:
+            raise ValueError("context_window and checkpoint_interval must be positive")
         self.metrics = ChainSessionMetrics(context_window, checkpoint_interval)
         self.toolkit = ToolkitGovernanceAdapter()
         self.security = SecurityLane(self.toolkit)
-        self.governance = ChainGovernance()
-        self.content_checker = content_checker
+        self.content = AgentContentMonitor(content_checker)
+        self.correctness = ChainGovernance()
+        self.action_governance = ActionGovernance(self.toolkit)
 
     def evaluate(self, outcome: ChainOutcome) -> ChainReview:
-        sec = []
-        content_checks: list[dict[str, object]] = []
-        for step in outcome.chain:
-            security_check = self.security.check((step,), outcome.alert.alert_id)[0]
-            sec.append(security_check)
-            if security_check.passed:
-                agent_output = (
-                    f"Agent: {step.agent}\nAction: {step.action_type}\n"
-                    f"Disposition: {step.disposition}\nEvidence amounts: {list(step.used_amounts)}"
-                )
-                verdict = self.content_checker(agent_output)
-            else:
-                verdict = {
-                    "passed": True,
-                    "rail": "skipped",
-                    "reason": "The deterministic authorization gate denied this step before execution.",
-                }
-            content_checks.append({"agent": step.agent, **verdict})
+        resource = f"aml-alert:{outcome.alert.alert_id}"
+        security = self.security.check(outcome.chain, outcome.alert.alert_id)
+        content_checks = tuple(
+            self.content.check(step, check.passed)
+            for step, check in zip(outcome.chain, security)
+        )
+        nemo_signal, nemo_live = summarize_nemo_checks(list(content_checks))
+        correctness = self.correctness.check(outcome.alert, outcome.chain)
+        authorized = all(check.passed for check in security)
+        action_decision = self.action_governance.decide(
+            agent="aml-action-governance", action="commit_disposition", resource=resource,
+            authorized=all(check.passed for check in security), correctness=correctness,
+            nemo=nemo_signal,
+        )
+        self._update_metrics(outcome, security, correctness, content_checks)
+        return ChainReview(
+            outcome=outcome, security=security, governance=correctness,
+            content_checks=content_checks, action_decision=action_decision,
+            agt_live=self.toolkit.engine is not None, nemo_live=nemo_live,
+        )
 
-        gov = self.governance.check(outcome.alert, outcome.chain)
-        nemo_signal, nemo_live = summarize_nemo_checks(content_checks)
-        nemo_failures = [check for check in content_checks if not check["passed"]]
-        nemo_unavailable = [check for check in content_checks if check["rail"] == "unavailable"]
-        decision = self.toolkit.evaluate(
-            agent="aml-governance-monitor",
-            action="aml_chain_review",
-            context={
-                "action": {
-                    "authorized": all(check.passed for check in sec),
-                    "status": "authorized" if all(check.passed for check in sec) else "unauthorized",
-                },
-                "governance": {
-                    "failed": not gov.passed,
-                    "passed": gov.passed,
-                    "status": "passed" if gov.passed else "failed",
-                },
-                "nemo": nemo_signal,
-            },
-            stage="post_tool",
-            resource=f"aml-alert:{outcome.alert.alert_id}",
-        )
-        m = self.metrics
-        m.turns += 1
-        m.retained_alerts.append(outcome.alert.alert_id)
-        if len(m.retained_alerts) > m.context_window:
-            m.retained_alerts.pop(0)
-        if m.turns % m.checkpoint_interval == 0:
-            m.checkpoints.append(m.turns)
-        all_security_passed = all(check.passed for check in sec)
-        if not all_security_passed:
-            m.security_flags += 1
-        if not gov.passed:
-            m.governance_flags += 1
-        if nemo_failures:
-            m.nemo_flags += 1
-        if nemo_unavailable:
-            m.nemo_unavailable += 1
-        if all_security_passed and not gov.passed:
-            m.security_intact_but_wrong += 1
-        from domain import ChainReview as _CR  # local import avoids cycle at module import
-        action_decision = {
-            "allowed": bool(decision.allowed),
-            "action": decision.action,
-            "reason": getattr(decision, "reason", ""),
-            "matched_rule": getattr(decision, "matched_rule", None),
-            "policy_name": getattr(decision, "policy_name", None),
-        }
-        return _CR(
-            outcome=outcome,
-            security=tuple(sec),
-            governance=gov,
-            content_checks=tuple(content_checks),
-            action_decision=action_decision,
-            agt_live=self.toolkit.engine is not None,
-            nemo_live=nemo_live,
-        )
+    def _update_metrics(self, outcome, security, correctness, content_checks) -> None:
+        metrics = self.metrics
+        metrics.turns += 1
+        metrics.retained_alerts.append(outcome.alert.alert_id)
+        del metrics.retained_alerts[:-metrics.context_window]
+        if metrics.turns % metrics.checkpoint_interval == 0:
+            metrics.checkpoints.append(metrics.turns)
+
+        all_authorized = all(check.passed for check in security)
+        has_nemo_flag = any(not check["passed"] for check in content_checks)
+        has_unavailable = any(check["rail"] == "unavailable" for check in content_checks)
+        metrics.security_flags += not all_authorized
+        metrics.governance_flags += not correctness.passed
+        metrics.nemo_flags += has_nemo_flag
+        metrics.nemo_unavailable += has_unavailable
+        metrics.security_intact_but_wrong += all_authorized and not correctness.passed
+
+
+class ChainMonitor(AMLRuntimeGovernance):
+    """Streamlit entry point retained for the existing chain review UI."""
+
+
+__all__ = [
+    "AML_POLICY", "AMLRuntimeGovernance", "ActionGovernance", "AgentContentMonitor",
+    "ChainGovernance", "ChainMonitor", "ChainSessionMetrics", "SecurityLane",
+    "ToolkitGovernanceAdapter",
+]

@@ -35,7 +35,7 @@ This live smoke check is separate from the mocked unit tests and may fail if the
 
 - `domain.py`: transactions, customer profiles, alerts, agent actions, and record-relative structuring calculation.
 - `agent_sim.py`: reproducible long-running triage/investigation simulation and planted faults.
-- `governance.py`: regular authorization checks, enhanced behavioral checks, and the stateful session monitor.
+- `governance.py`: architecture-aligned deterministic top gate, NeMo middle-layer monitor, record-relative correctness checker, final AGT Action Governance, and bounded session metrics.
 - `nemo_guardrails.py`: lazy NeMo output-rail adapter and per-session verdict aggregation.
 - `agt_resolver.py`: diamond-path behavioral correctness resolver followed by the separate final Action Governance policy.
 - `app.py`: manager-facing Streamlit scoreboard, three-stage verdict rows, and long-running session health metrics.

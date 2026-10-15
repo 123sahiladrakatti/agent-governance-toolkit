@@ -31,17 +31,18 @@ def _load_rails():
     return LLMRails(RailsConfig.from_path(str(config_path)))
 
 
-def _response_text(result: object) -> str:
-    response = getattr(result, "response", result)
-    if isinstance(response, dict):
-        response = response.get("response", response)
-    if isinstance(response, list):
-        return "\n".join(
-            str(message.get("content", ""))
-            for message in response
-            if isinstance(message, dict) and message.get("role") == "assistant"
-        )
-    return str(response)
+def _output_rail_decision(result: object) -> str | None:
+    log = getattr(result, "log", None)
+    for rail in getattr(log, "activated_rails", ()) or ():
+        if getattr(rail, "type", None) != "output":
+            continue
+        for action in getattr(rail, "executed_actions", ()) or ():
+            if getattr(action, "action_name", None) != "self_check_output":
+                continue
+            outcome = getattr(action, "return_value", None)
+            decision = getattr(outcome, "decision", None)
+            return str(getattr(decision, "value", decision)).lower() if decision is not None else None
+    return None
 
 
 def nemo_check(agent_output: str) -> NemoVerdict:
@@ -57,17 +58,21 @@ def nemo_check(agent_output: str) -> NemoVerdict:
         if _RAILS is None:
             _RAILS = _load_rails()
         result = _RAILS.generate(
-            messages=[{"role": "assistant", "content": agent_output}],
-            options={"rails": {"dialog": False, "output": True}},
+            messages=[
+                {"role": "user", "content": "Review the following agent output."},
+                {"role": "assistant", "content": agent_output},
+            ],
+            options={
+                "rails": {"dialog": False, "output": True},
+                "log": {"activated_rails": True},
+            },
         )
-        checked_output = _response_text(result).strip()
-        if checked_output == agent_output.strip():
+        decision = _output_rail_decision(result)
+        if decision == "allow":
             return {"passed": True, "rail": RAIL_NAME, "reason": "NeMo output rail allowed the content."}
-        return {
-            "passed": False,
-            "rail": RAIL_NAME,
-            "reason": "NeMo output rail blocked or changed the agent content.",
-        }
+        if decision == "block":
+            return {"passed": False, "rail": RAIL_NAME, "reason": "NeMo output rail blocked the content."}
+        return {"passed": True, "rail": "unavailable", "reason": "NeMo output rail did not execute."}
     except Exception:
         return {"passed": True, "rail": "unavailable", "reason": "nemo not running"}
 
