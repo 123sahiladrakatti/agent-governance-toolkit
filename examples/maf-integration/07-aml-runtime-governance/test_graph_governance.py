@@ -16,6 +16,7 @@ class DiamondGovernanceTests(unittest.TestCase):
         self.governor = GraphGovernor(content_checker=allow_content)
         self.reviews = [self.governor.review(o) for o in run_diamond_session(40, 7)]
         self.star = next(r for r in self.reviews if r.outcome.is_star_case)
+        self.conflict = next(r for r in self.reviews if r.outcome.is_conflict_case)
 
     def test_star_case_all_hops_authorized_but_denied_and_attributed_to_c(self):
         self.assertEqual(len(self.star.handoffs), 6)
@@ -39,11 +40,47 @@ class DiamondGovernanceTests(unittest.TestCase):
         self.assertEqual(self.star.policy_decision["reason"], "Record-relative behavioral governance failed.")
 
     def test_clean_diamonds_commit(self):
-        clean = [r for r in self.reviews if not r.outcome.is_star_case]
+        clean = [r for r in self.reviews if not r.outcome.is_star_case and not r.outcome.is_conflict_case]
         self.assertTrue(all(r.attribution.passed and r.status == "committed" for r in clean))
         self.assertTrue(all(r.policy_decision["action"] == "allow" for r in clean))
         self.assertTrue(all(r.nemo_live for r in clean))
-        self.assertEqual(sum(not r.attribution.passed for r in self.reviews), 1)
+        self.assertEqual(sum(not r.attribution.passed for r in self.reviews), 2)
+        self.assertEqual(
+            {r.attribution.category for r in self.reviews if not r.attribution.passed},
+            {"masked-branch-error", "unreconciled-conflict"},
+        )
+
+    def test_stale_screening_view_is_unreconciled_and_requires_human_review(self):
+        outcome = self.conflict.outcome
+        screening = outcome.step("customer-screening")
+        disposition = outcome.step("decision")
+
+        self.assertEqual(screening.finding, "hit")
+        self.assertTrue(screening.flagged)
+        self.assertEqual(disposition.finding_version, 3)
+        self.assertEqual(disposition.received_findings_by_parent["customer-screening"], "no-hit")
+        self.assertLess(
+            disposition.received_versions_by_parent["customer-screening"],
+            screening.finding_version,
+        )
+        self.assertEqual(disposition.disposition, "CLEAR")
+        self.assertFalse(self.conflict.attribution.passed)
+        self.assertEqual(self.conflict.attribution.category, "unreconciled-conflict")
+        self.assertEqual(self.conflict.attribution.origin_node, "E")
+        self.assertIn("stale case state", self.conflict.attribution.reason)
+        self.assertEqual(self.conflict.policy_decision["action"], "require_approval")
+        self.assertEqual(self.conflict.policy_decision["matched_rule"], "require-review-for-unreconciled-conflict")
+        self.assertEqual(self.conflict.status, "escalated")
+
+    def test_conflict_context_round_trip_preserves_stale_versions(self):
+        outcome = next(item for item in run_diamond_session(8, 7) if item.is_conflict_case)
+        request = type("R", (), {"context": {"aml_graph": graph_context(outcome)}})()
+        resolver = BehavioralAuthorityResolver()
+
+        decision = resolver.resolve(request)
+
+        self.assertEqual(decision.decision, "deny")
+        self.assertEqual(resolver.last_attribution.category, "unreconciled-conflict")
 
     def test_nemo_flag_is_consumed_as_human_approval_not_resolver_input(self):
         flagged = lambda _: {"passed": False, "rail": "self_check_output", "reason": "test injection flag"}

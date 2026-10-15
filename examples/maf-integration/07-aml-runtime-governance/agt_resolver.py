@@ -32,6 +32,7 @@ from typing import Any, Optional
 
 from agent_sim import (
     DIAMOND_BRANCHES,
+    DIAMOND_NODE_ID,
     DIAMOND_PARENTS,
     DISPOSITION_AGENT,
     KYC_AGENT,
@@ -126,6 +127,8 @@ ACTION_GOVERNANCE_POLICY = json.dumps({
     "rules": [
         {"name": "deny-unauthorized-action", "description": "Final action is not authorized.",
          "stage": "post_tool", "condition": "action.status == 'unauthorized'", "action": "deny", "priority": 200},
+        {"name": "require-review-for-unreconciled-conflict", "description": "A stale or contradictory agent finding requires human reconciliation.",
+         "stage": "post_tool", "condition": "governance.status == 'conflict'", "action": "require_approval", "priority": 180},
         {"name": "deny-incorrect-behavioral-result", "description": "Record-relative behavioral governance failed.",
          "stage": "post_tool", "condition": "governance.status == 'failed'", "action": "deny", "priority": 150},
         {"name": "require-review-for-nemo-flag", "description": "NeMo content flags require human approval.",
@@ -162,6 +165,8 @@ def graph_context(outcome: GraphOutcome) -> dict[str, Any]:
             "used_aggregate": s.used_aggregate, "disposition": s.disposition, "acted_account_id": s.acted_account_id,
             "received_amounts_by_parent": {k: list(v) for k, v in s.received_amounts_by_parent.items()},
             "received_findings_by_parent": dict(s.received_findings_by_parent),
+            "finding_version": s.finding_version,
+            "received_versions_by_parent": dict(s.received_versions_by_parent),
         } for s in outcome.steps],
     }
 
@@ -183,6 +188,8 @@ def _decode(ctx: dict[str, Any]) -> tuple[Alert, tuple[GraphStep, ...]]:
         used_aggregate=float(s["used_aggregate"]), disposition=s["disposition"], acted_account_id=s["acted_account_id"],
         received_amounts_by_parent={k: tuple(v) for k, v in s["received_amounts_by_parent"].items()},
         received_findings_by_parent=dict(s["received_findings_by_parent"]),
+        finding_version=int(s.get("finding_version", 1)),
+        received_versions_by_parent={k: int(v) for k, v in s.get("received_versions_by_parent", {}).items()},
     ) for s in ctx["steps"])
     return alert, steps
 
@@ -242,14 +249,53 @@ def attribute_graph(alert: Alert, steps: tuple[GraphStep, ...]) -> GraphAttribut
     merged = merge.disposition or "CLEAR"
 
     # Fan-in provenance: did E receive exactly what each parent reported?
+    stale_flagged_branches = [
+        agent for agent in DIAMOND_BRANCHES
+        if truth[agent].flagged and (
+            merge.received_findings_by_parent.get(agent) != by_agent[agent].finding
+            or merge.received_versions_by_parent.get(agent, by_agent[agent].finding_version)
+            < by_agent[agent].finding_version
+        )
+    ]
+    received_flags = {
+        SANCTIONS_AGENT: merge.received_findings_by_parent.get(SANCTIONS_AGENT) == "hit",
+        TRANSACTION_AGENT: merge.received_findings_by_parent.get(TRANSACTION_AGENT) == "structuring",
+        KYC_AGENT: merge.received_findings_by_parent.get(KYC_AGENT) == "incomplete",
+    }
+    from_inputs = merge_disposition(*(received_flags[agent] for agent in DIAMOND_BRANCHES))
     tampered = [p for p in merge.received_from
                 if merge.received_findings_by_parent.get(p) != by_agent[p].finding]
-    from_inputs = merge_disposition(*(by_agent[a].flagged for a in DIAMOND_BRANCHES))
-    merge_ok = not tampered and merged == from_inputs
+    stale = [p for p in merge.received_from
+             if merge.received_versions_by_parent.get(p, by_agent[p].finding_version)
+             < by_agent[p].finding_version]
+    merge_ok = not tampered and not stale and merged == from_inputs
+    if stale_flagged_branches and merged == "CLEAR":
+        screening = ", ".join(f"{DIAMOND_NODE_ID[agent]} ({agent})" for agent in stale_flagged_branches)
+        received_versions = ", ".join(
+            f"{DIAMOND_NODE_ID[agent]} v{merge.received_versions_by_parent.get(agent, 1)}"
+            for agent in stale_flagged_branches
+        )
+        checks.append(BranchCheck(
+            merge.agent, merge.node_id, merged, expected, False,
+            f"unreconciled conflict: {screening} reported a probable watchlist match, but disposition "
+            f"used stale case state ({received_versions}) and consumed "
+            f"'{merge.received_findings_by_parent.get(stale_flagged_branches[0], 'missing')}' instead "
+            f"of '{by_agent[stale_flagged_branches[0]].finding}'; no reconciliation occurred",
+        ))
+        return GraphAttribution(
+            False, "unreconciled-conflict", merge.agent, merge.node_id,
+            tuple(stale_flagged_branches),
+            f"{screening} flagged a probable watchlist match in case-state "
+            f"v{by_agent[stale_flagged_branches[0]].finding_version}, but {merge.agent} used stale case state "
+            f"{received_versions} and cleared the customer without reconciling the conflicting findings. "
+            "The clear disposition must not be committed automatically.",
+            tuple(checks), merged, expected,
+        )
     checks.append(BranchCheck(
         merge.agent, merge.node_id, merged, expected, merge_ok and merged == expected,
         ("merged its three inputs faithfully" if merge_ok else
-         f"merge diverged from its inputs (inputs imply {from_inputs}; altered: {', '.join(tampered) or 'none'})"),
+         f"merge diverged from its inputs (consumed inputs imply {from_inputs}; "
+         f"stale: {', '.join(stale) or 'none'}; altered: {', '.join(tampered) or 'none'})"),
     ))
     checks_t = tuple(checks)
     diverged = [c for c in checks_t[:-1] if not c.matches]
@@ -453,7 +499,11 @@ class GraphGovernor:
             },
             "governance": {
                 "passed": attribution.passed,
-                "status": "passed" if attribution.passed else "failed",
+                "status": (
+                    "passed" if attribution.passed else
+                    "conflict" if attribution.category == "unreconciled-conflict" else "failed"
+                ),
+                "category": attribution.category or "",
             },
             "nemo": nemo_signal,
             "resource": resource,

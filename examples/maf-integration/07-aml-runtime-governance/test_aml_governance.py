@@ -1,4 +1,6 @@
 import unittest
+from dataclasses import replace
+from datetime import timedelta
 
 from agent_sim import generate_alerts, run_chain_session
 from domain import recompute_structuring
@@ -35,6 +37,18 @@ class AmlGovernanceTests(unittest.TestCase):
     def test_no_hidden_expected_disposition_labels(self):
         alert = generate_alerts(1, seed=7)[0]
         self.assertFalse(hasattr(alert, "expected_disposition"))
+
+    def test_structuring_window_contains_all_qualifying_deposits(self):
+        alert = generate_alerts(1, seed=7)[0]
+        spread_transactions = tuple(
+            replace(transaction, timestamp=transaction.timestamp + timedelta(days=index * 3))
+            for index, transaction in enumerate(alert.transactions)
+        )
+
+        result = recompute_structuring(replace(alert, transactions=spread_transactions))
+
+        self.assertFalse(result.within_window)
+        self.assertFalse(result.is_structuring)
 
     def test_monitor_retains_bounded_context_and_checkpoints(self):
         monitor = ChainMonitor(context_window=8, checkpoint_interval=5, content_checker=allow_content)

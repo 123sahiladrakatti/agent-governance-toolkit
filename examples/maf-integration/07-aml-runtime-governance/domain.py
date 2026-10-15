@@ -93,9 +93,9 @@ def recompute_structuring(alert: Alert, threshold: float = CTR_THRESHOLD) -> Str
         if transaction.type == "cash_deposit" and transaction.amount < threshold
     ]
     cash_deposits.sort(key=lambda transaction: transaction.timestamp)
-    within_window = bool(cash_deposits) and any(
-        transaction.timestamp - cash_deposits[0].timestamp <= timedelta(days=STRUCTURING_WINDOW_DAYS)
-        for transaction in cash_deposits
+    within_window = bool(cash_deposits) and (
+        cash_deposits[-1].timestamp - cash_deposits[0].timestamp
+        <= timedelta(days=STRUCTURING_WINDOW_DAYS)
     )
     amounts = tuple(transaction.amount for transaction in cash_deposits)
     transaction_ids = tuple(transaction.id for transaction in cash_deposits)
@@ -267,6 +267,8 @@ class GraphStep:
     acted_account_id: str | None = None
     received_amounts_by_parent: dict[str, tuple[float, ...]] = field(default_factory=dict)
     received_findings_by_parent: dict[str, str] = field(default_factory=dict)
+    finding_version: int = 1
+    received_versions_by_parent: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -277,6 +279,7 @@ class GraphOutcome:
     steps: tuple[GraphStep, ...]
     is_star_case: bool = False
     fault: str | None = None
+    is_conflict_case: bool = False
 
     def step(self, agent: str) -> GraphStep:
         return next(s for s in self.steps if s.agent == agent)

@@ -224,6 +224,7 @@ DIAMOND_ACTION = {
     DISPOSITION_AGENT: "merge_disposition",
 }
 MISREAD_BRANCH = "misread-branch"
+STALE_SCREENING_VIEW = "stale-screening-view"
 
 
 def _misread(amounts: tuple[float, ...]) -> tuple[float, ...]:
@@ -241,7 +242,11 @@ def _graph_step(agent: str, finding: str, flagged: bool, alert: Alert, **extra) 
     )
 
 
-def build_diamond(alert: Alert, faulted_branch: str | None = None) -> tuple[GraphStep, ...]:
+def build_diamond(
+    alert: Alert,
+    faulted_branch: str | None = None,
+    stale_screening_view: bool = False,
+) -> tuple[GraphStep, ...]:
     """Run one alert through the A -> (B, C, D) -> E diamond.
 
     ``faulted_branch`` may be ``TRANSACTION_AGENT`` (or ``"C"``) to plant the
@@ -256,27 +261,40 @@ def build_diamond(alert: Alert, faulted_branch: str | None = None) -> tuple[Grap
     a = _graph_step(TRIAGE_AGENT, f"routed {alert.alert_id} to 3 branches", False, alert)
 
     sanctions = recompute_sanctions(alert)
-    b = _graph_step(SANCTIONS_AGENT, sanctions.finding, sanctions.flagged, alert)
+    b = _graph_step(SANCTIONS_AGENT, sanctions.finding, sanctions.flagged, alert, finding_version=2)
 
     truth = recompute_structuring(alert)
     used = _misread(truth.qualifying_amounts) if faulted_branch == TRANSACTION_AGENT else truth.qualifying_amounts
     c_disposition = _disposition_for(used)
     c_flagged = c_disposition == "FILE_SAR"
     c = _graph_step(TRANSACTION_AGENT, "structuring" if c_flagged else "not-structuring", c_flagged, alert,
-                    used_amounts=used, used_aggregate=sum(used), disposition=c_disposition)
+                    used_amounts=used, used_aggregate=sum(used), disposition=c_disposition,
+                    finding_version=2)
 
     kyc = recompute_kyc(alert)
-    d = _graph_step(KYC_AGENT, kyc.finding, kyc.flagged, alert)
+    d = _graph_step(KYC_AGENT, kyc.finding, kyc.flagged, alert, finding_version=2)
 
-    # E trusts its three parents verbatim (no re-reading of records).
+    # E may receive an older case-state version that omits a screening update.
     branches = (b, c, d)
-    merged = merge_disposition(b.flagged, c.flagged, d.flagged)
-    clean = sum(not s.flagged for s in branches)
+    consumed_findings = {step.agent: step.finding for step in branches}
+    consumed_versions = {step.agent: step.finding_version for step in branches}
+    consumed_flags = {step.agent: step.flagged for step in branches}
+    if stale_screening_view:
+        consumed_findings[SANCTIONS_AGENT] = "no-hit"
+        consumed_versions[SANCTIONS_AGENT] = 1
+        consumed_flags[SANCTIONS_AGENT] = False
+    merged = merge_disposition(*(consumed_flags[step.agent] for step in branches))
+    clean = sum(not consumed_flags[step.agent] for step in branches)
+    merge_finding = f"{merged} ({clean}/3 branches clean)"
+    if stale_screening_view:
+        merge_finding += " - stale screening view"
     e = _graph_step(
-        DISPOSITION_AGENT, f"{merged} ({clean}/3 branches clean)", merged != "CLEAR", alert,
+        DISPOSITION_AGENT, merge_finding, merged != "CLEAR", alert,
         used_amounts=c.used_amounts, used_aggregate=c.used_aggregate, disposition=merged,
         received_amounts_by_parent={s.agent: s.used_amounts for s in branches},
-        received_findings_by_parent={s.agent: s.finding for s in branches},
+        received_findings_by_parent=consumed_findings,
+        finding_version=3,
+        received_versions_by_parent=consumed_versions,
     )
     return (a, b, c, d, e)
 
@@ -284,8 +302,8 @@ def build_diamond(alert: Alert, faulted_branch: str | None = None) -> tuple[Grap
 def run_diamond_session(count: int = 40, seed: int = 7) -> list[GraphOutcome]:
     """A batch of diamonds over the same synthetic alerts as the chain session.
 
-    One planted misread-branch case sits at a fixed index (6, clamped). Its first
-    deposit is pinned to $9,200 so the narrated misread reads "$9,200 as $2,900".
+    Two independent failure cases are planted: a transaction misread at index 6
+    and a stale screening view at index 1. Each is deterministic and labeled.
     """
     alerts = generate_alerts(count, seed)
     star_index = min(6, count - 1)
@@ -293,9 +311,25 @@ def run_diamond_session(count: int = 40, seed: int = 7) -> list[GraphOutcome]:
     if star.transactions and star.transactions[0].type == "cash_deposit":
         first = _replace(star.transactions[0], amount=9_200.0)
         alerts[star_index] = _replace(star, transactions=(first,) + star.transactions[1:])
+    conflict_index = min(1, count - 1)
+    conflict_alert = alerts[conflict_index]
+    conflict_customer = _replace(conflict_alert.customer, name="Viktor Petrov Holdings")
+    alerts[conflict_index] = _replace(conflict_alert, customer=conflict_customer)
     outcomes: list[GraphOutcome] = []
     for index, alert in enumerate(alerts):
-        fault = MISREAD_BRANCH if index == star_index else None
-        steps = build_diamond(alert, TRANSACTION_AGENT if fault else None)
-        outcomes.append(GraphOutcome(alert=alert, steps=steps, is_star_case=(index == star_index), fault=fault))
+        is_star = index == star_index
+        is_conflict = index == conflict_index
+        fault = MISREAD_BRANCH if is_star else (STALE_SCREENING_VIEW if is_conflict else None)
+        steps = build_diamond(
+            alert,
+            TRANSACTION_AGENT if is_star else None,
+            stale_screening_view=is_conflict,
+        )
+        outcomes.append(GraphOutcome(
+            alert=alert,
+            steps=steps,
+            is_star_case=is_star,
+            fault=fault,
+            is_conflict_case=is_conflict,
+        ))
     return outcomes

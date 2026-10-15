@@ -43,6 +43,8 @@ AML_POLICY = json.dumps({
          "stage": "pre_tool", "condition": "action.authorized", "action": "allow", "priority": 100},
         {"name": "deny-unauthorized-final-action", "description": "The final action must be authorized.",
          "stage": "post_tool", "condition": "action.status == 'unauthorized'", "action": "deny", "priority": 200},
+        {"name": "require-review-for-unreconciled-conflict", "description": "Unreconciled agent findings require human review.",
+         "stage": "post_tool", "condition": "governance.status == 'conflict'", "action": "require_approval", "priority": 180},
         {"name": "deny-incorrect-record-relative-result", "description": "Incorrect results fail deterministic governance.",
          "stage": "post_tool", "condition": "governance.status == 'failed'", "action": "deny", "priority": 150},
         {"name": "require-review-for-nemo-content-flag", "description": "A NeMo content flag requires human review.",
@@ -63,6 +65,12 @@ class ToolkitGovernanceAdapter:
     """Load AGT's PolicyEngine and AuditLog, with a deterministic local fallback."""
 
     def __init__(self, policy_text: str = AML_POLICY) -> None:
+        policy = json.loads(policy_text)
+        self.policy_name = str(policy.get("name", "aml-runtime-governance"))
+        self.rule_names = {
+            str(rule.get("condition")): str(rule.get("name"))
+            for rule in policy.get("rules", [])
+        }
         toolkit = self._import_toolkit()
         self.engine = None
         self.audit = []
@@ -91,33 +99,46 @@ class ToolkitGovernanceAdapter:
             except ImportError:
                 return None
 
-    @staticmethod
-    def _fallback_decision(context: dict[str, object], stage: str):
+    def _fallback_decision(self, context: dict[str, object], stage: str):
         action = context.get("action", {})
         governance = context.get("governance", {})
         nemo = context.get("nemo", {})
         authorized = bool(action.get("authorized"))
 
+        def rule(condition: str, default: str | None) -> str | None:
+            return self.rule_names.get(condition, default)
+
         if stage == "pre_tool":
             allowed = authorized
             result = "allow" if allowed else "deny"
-            rule = "allow-authorized-agent-step" if allowed else None
+            matched_rule = rule("action.authorized", "allow-authorized-agent-step") if allowed else None
         elif action.get("status") == "unauthorized":
-            allowed, result, rule = False, "deny", "deny-unauthorized-final-action"
+            allowed, result = False, "deny"
+            matched_rule = rule("action.status == 'unauthorized'", "deny-unauthorized-final-action")
+        elif governance.get("status") == "conflict":
+            allowed, result = False, "require_approval"
+            matched_rule = rule("governance.status == 'conflict'", "require-review-for-unreconciled-conflict")
         elif governance.get("status") == "failed":
-            allowed, result, rule = False, "deny", "deny-incorrect-record-relative-result"
+            allowed, result = False, "deny"
+            matched_rule = rule("governance.status == 'failed'", "deny-incorrect-record-relative-result")
         elif nemo.get("status") == "flagged":
-            allowed, result, rule = False, "require_approval", "require-review-for-nemo-content-flag"
+            allowed, result = False, "require_approval"
+            matched_rule = rule("nemo.status == 'flagged'", "require-review-for-nemo-content-flag")
         elif nemo.get("status") in {"passed", "unavailable"} and governance.get("status") == "passed" and authorized:
             allowed, result = True, "allow"
-            rule = "allow-verified-action" if nemo.get("status") == "passed" else "allow-verified-action-with-nemo-unavailable"
+            if nemo.get("status") == "passed":
+                condition = "action.status == 'authorized' and governance.status == 'passed' and nemo.status == 'passed'"
+                matched_rule = rule(condition, "allow-verified-action")
+            else:
+                condition = "action.status == 'authorized' and governance.status == 'passed' and nemo.status == 'unavailable'"
+                matched_rule = rule(condition, "allow-verified-action-with-nemo-unavailable")
         else:
-            allowed, result, rule = False, "deny", None
+            allowed, result, matched_rule = False, "deny", None
 
         return SimpleNamespace(
-            allowed=allowed, action=result, matched_rule=rule,
-            policy_name="aml-runtime-governance",
-            reason=rule or "No matching rule; default deny", evaluation_ms=0.0,
+            allowed=allowed, action=result, matched_rule=matched_rule,
+            policy_name=self.policy_name,
+            reason=matched_rule or "No matching rule; default deny", evaluation_ms=0.0,
         )
 
     def evaluate(self, agent: str, action: str, context: dict[str, object], stage: str, resource: str):
@@ -277,8 +298,14 @@ class ActionGovernance:
         context = {
             "action": {"type": action, "authorized": authorized,
                        "status": "authorized" if authorized else "unauthorized"},
-            "governance": {"passed": correctness.passed,
-                           "status": "passed" if correctness.passed else "failed"},
+            "governance": {
+                "passed": correctness.passed,
+                "status": (
+                    "passed" if correctness.passed else
+                    "conflict" if correctness.category == "unreconciled-conflict" else "failed"
+                ),
+                "category": correctness.category or "",
+            },
             "nemo": nemo,
             "resource": resource,
             "capabilities": list(capabilities),
