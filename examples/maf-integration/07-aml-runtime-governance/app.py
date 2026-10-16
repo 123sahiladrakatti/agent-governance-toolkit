@@ -36,7 +36,7 @@ from domain import (
     recompute_structuring,
 )
 
-st.set_page_config(page_title="AGT Graph Governance", page_icon="◆", layout="wide")
+st.set_page_config(page_title="AGT Graph Governance", page_icon="\u25c6", layout="wide")
 
 st.markdown("""
 <style>
@@ -90,8 +90,26 @@ html, body, [class*="css"] { font-family:ui-sans-serif,system-ui,-apple-system,B
 .state-version.current { border:2px solid #c09b50; background:#fbf5e8; }
 .state-version.stale { border:2px solid #c66b70; background:#fff0f1; }
 .state-arrow { color:var(--red); font-size:.75rem; font-weight:700; text-align:center; }
-.flow-arrow { color:var(--muted); font-size:.9rem; line-height:1; }
-.flow-branches,.flow-outcomes,.flow-downstream { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.5rem; width:min(92%,920px); }
+.flow-arrow { color:var(--muted); font-size:1.05rem; font-weight:600; line-height:1.1; margin:.15rem 0; }
+.flow-branches,.flow-outcomes,.flow-downstream { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.5rem; width:min(92%,920px); position:relative; margin-top:34px; overflow:visible; }
+/* BUS: one horizontal line spanning from the centre of box 1 to the centre of box 3. */
+.flow-outcomes::before,.flow-downstream::before { content:""; position:absolute; top:-20px; left:16.667%; right:16.667%; height:2px; background:var(--muted); z-index:0; }
+/* FEEDER: vertical line from the spine arrow DOWN THROUGH the bus (overlaps it, no gap). */
+.flow-outcomes::after,.flow-downstream::after { content:""; position:absolute; top:-34px; left:calc(50% - 1px); width:2px; height:16px; background:var(--muted); z-index:0; }
+/* DROPS: from ABOVE the bus (-22px) down INTO each box top (+2px) so both ends overlap, no gaps. */
+.flow-outcomes > *::before,.flow-downstream > *::before { content:""; position:absolute; top:-22px; left:calc(50% - 1px); width:2px; height:24px; background:var(--muted); z-index:0; }
+.flow-outcomes > *,.flow-downstream > * { position:relative; }
+.flow-outcomes > * > *,.flow-downstream > * > * { position:relative; z-index:1; }
+/* CONTINUE connector: an L-path from under the CONTINUE box (right third) across to the centre, then down into Disposition. */
+.continue-connector { position:relative; width:min(92%,920px); height:44px; margin:2px auto 0; }
+/* label */
+.continue-connector span { position:absolute; top:12px; left:50%; transform:translateX(-50%); color:var(--muted); font-size:.92rem; font-weight:600; white-space:nowrap; background:var(--paper); padding:0 .4rem; z-index:2; }
+/* 1: vertical drop straight down from under the CONTINUE box */
+.continue-connector::before { content:""; position:absolute; top:0; right:16.667%; width:2px; height:22px; background:var(--muted); }
+/* 2: horizontal run leftwards to the centre at y=22, PLUS the centre drop down into Disposition via box-shadow at the left end */
+.continue-connector::after { content:""; position:absolute; top:22px; left:50%; width:calc(33.333% + 2px); height:2px; background:var(--muted); }
+/* 3: the centre vertical drop into Disposition */
+.continue-drop { content:""; position:absolute; top:22px; left:calc(50% - 1px); width:2px; height:24px; background:var(--muted); }
 .flow-reasoning { display:grid; grid-template-columns:minmax(0,1fr) 220px; gap:.55rem; width:min(82%,820px); align-items:center; }
 .flow-outcomes .block { border-color:#c66b70; background:#fff0f1; }
 .flow-outcomes .human { border-color:#c09b50; background:#fbf5e8; }
@@ -162,7 +180,7 @@ st.markdown(
     f'<b>{STRUCTURING_MIN_DEPOSITS} cash deposits</b>, each below <b>{money(CTR_THRESHOLD)}</b>, totalling at least '
     f'<b>{money(STRUCTURING_AGGREGATE)}</b>, with the '
     f'qualifying deposits contained within <b>{STRUCTURING_WINDOW_DAYS} days</b>.</p></div>'
-    f'<div class="primer-card"><h4>“Not structuring”</h4><p>This means only that the records did <b>not meet the demo rule</b>. '
+    f'<div class="primer-card"><h4>\u201cNot structuring\u201d</h4><p>This means only that the records did <b>not meet the demo rule</b>. '
     f'It is not proof that activity is legitimate, and it does not override sanctions, KYC, or other monitoring signals.</p></div>'
     f'<div class="primer-card"><h4>Flag versus disposition</h4><p>A <b>flag</b> is a signal that needs policy handling; it is not an '
     f'accusation or final legal conclusion. <code>CLEAR</code>, <code>ESCALATE</code>, and <code>FILE_SAR</code> are simulated '
@@ -288,7 +306,7 @@ st.markdown(
     f'<p style="margin:.7rem 0 0;font-size:.9rem;color:var(--muted)">Recomputed from these records: {truth.qualifying_count} '
     f'sub-threshold cash deposits totalling <b>{money(truth.aggregate)}</b> '
     f'{"within" if truth.within_window else "outside"} the {STRUCTURING_WINDOW_DAYS}-day window &mdash; '
-    f'{"meets this demo’s potential-structuring rule and produces a FILE_SAR referral." if truth.is_structuring else "does not meet this demo’s structuring rule (not-structuring)."}</p></div>',
+    f'{"meets this demo\u2019s potential-structuring rule and produces a FILE_SAR referral." if truth.is_structuring else "does not meet this demo\u2019s structuring rule (not-structuring)."}</p></div>',
     unsafe_allow_html=True,
 )
 
@@ -470,17 +488,19 @@ st.markdown(
     f'<div class="flow-arrow">&#8595; authorization + correctness + NeMo signal</div>'
     f'<div class="flow-node gate"><b>AGT Action Governance - {flow_action_label}</b>'
     f'<small>{esc(str(star.policy_decision.get("matched_rule") or ("evaluate to produce the final PolicyDecision" if not has_live_review else "default policy")))}</small></div>'
+    f'<div class="flow-arrow">&#8595; branches to three possible actions</div>'
     f'<div class="flow-outcomes">'
     f'<div class="flow-node block{" active" if flow_active_outcome == "block" else ""}"><b>DENY / BLOCK</b><small>authorization or correctness failure</small></div>'
     f'<div class="flow-node human{" active" if flow_active_outcome == "human" else ""}"><b>REQUIRE APPROVAL / HUMAN REVIEW</b><small>content flag or unresolved conflict</small></div>'
     f'<div class="flow-node continue{" active" if flow_active_outcome == "continue" else ""}"><b>ALLOW / CONTINUE</b><small>policy allows the action</small></div>'
     f'</div>'
-    f'<div class="flow-arrow">&#8595; continue</div>'
-    f'<div class="flow-downstream">'
-    f'<div class="flow-node alert"><b>Disposition</b><small>CLEAR / ESCALATE / SAR referral</small></div>'
-    f'<div class="flow-node alert"><b>SAR / Narrative</b><small>claims linked to evidence</small></div>'
-    f'<div class="flow-node policy"><b>Audit / Evidence</b><small>reconstructable record</small></div>'
-    f'</div></div>'
+    f'<div class="continue-connector"><span>continue</span><div class="continue-drop"></div></div>'
+    f'<div class="flow-node alert"><b>8. Disposition Agent</b><small>CLEAR / ESCALATE / refer for SAR</small></div>'
+    f'<div class="flow-arrow">&#8595;</div>'
+    f'<div class="flow-node alert"><b>9. SAR / Narrative Agent</b><small>claims linked to evidence IDs</small></div>'
+    f'<div class="flow-arrow">&#8595;</div>'
+    f'<div class="flow-node policy"><b>10. Audit / Evidence Agent</b><small>full reconstructable record</small></div>'
+    f'</div>'
     f'<p style="margin:.2rem 0 .7rem;font-size:.84rem;color:var(--muted)">'
     f'{"Amber labels are pending; evaluate the session to run the top gate, NeMo, and final policy." if not has_live_review else "Green handoff labels show AGT authorization; branch nodes report content and correctness signals."} '
     f'NeMo checks content only. The behavioral resolver checks records, and AGT Action Governance decides.</p>'
