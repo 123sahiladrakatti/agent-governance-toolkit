@@ -162,8 +162,10 @@ st.markdown(
     '<p class="kicker">Runtime agent governance on a fan-out / fan-in AML investigation graph</p>'
     '<h1>Conflicting agent views need reconciliation before clearance.</h1>'
     '<p>One alert fans out to three parallel agents and fans back in to a fourth that merges their '
-    'results. In the conflict case, screening flags a probable watchlist match, but disposition reads an '
-    'older case-state version and clears the customer without reconciling the flag. AGT authorizes actions; '
+    'results. In the conflict case, the screening agent is correct \u2014 it flags a probable watchlist match \u2014 '
+    'but the disposition agent reads a stale version of that finding from case state and clears the customer '
+    'without reconciling the flag. The watchlist itself is current; what is stale is the version of the '
+    'screening finding the decider used. AGT authorizes actions; '
     'the behavioral resolver checks consistency and correctness; NeMo checks output content; final Action '
     'Governance blocks or routes the unresolved case to human review.</p>'
     '</div>',
@@ -348,7 +350,7 @@ def diamond_svg(review) -> str:
                 fill, stroke, sw, tone = ("#fbf3e2", "#9a6819", 2, "#9a6819") if wrong else ("#ffffff", "#d7e0e5", 1, "#17212b")
             line2 = f"merged: {st_.disposition}"
             line3 = (
-                "used stale screening view"
+                "used a stale version of screening\u2019s finding"
                 if stale_conflict else
                 "confident: 3/3 branches clean" if st_.finding.endswith("(3/3 branches clean)") else st_.finding
             )
@@ -417,7 +419,7 @@ if is_conflict_case:
         f'<small>{esc(screening_step.finding.upper())} - probable watchlist match</small></div>'
         '<div class="state-arrow">NOT RECONCILED<br>&rarr;</div>'
         f'<div class="state-version stale"><b>Disposition consumed v{consumed_screening_version}</b>'
-        f'<small>{esc(consumed_screening_finding.upper())} - stale case snapshot</small></div>'
+        f'<small>{esc(consumed_screening_finding.upper())} - stale version of screening\u2019s finding</small></div>'
         '</div>'
         '<div class="flow-node stale"><b>Disposition agent clears customer</b>'
         '<small>the newer screening flag was not incorporated or reconciled</small></div>'
@@ -444,8 +446,11 @@ flow_active_outcome = {
 if is_conflict_case:
     flow_case_narrative = (
         f'<p style="margin:.6rem 0 0;font-size:.9rem;color:var(--muted)">'
-        f'Screening found a probable watchlist match, but disposition consumed the earlier '
-        f'<b>{esc(consumed_screening_finding)}</b> snapshot and produced <b>CLEAR</b> without reconciliation. '
+        f'The screening agent correctly found a probable watchlist match (its current finding), but the '
+        f'disposition agent consumed an earlier <b>{esc(consumed_screening_finding)}</b> version of that '
+        f'finding from stale case state and produced <b>CLEAR</b> without reconciliation. This is a '
+        f'multi-agent reconciliation failure, not a stale watchlist \u2014 screening was right; the decider '
+        f'read an outdated version of it. '
         f'AGT Action Governance routes this unresolved conflict to human review before the clear can commit. '
         f'The RAG, typology, narrative, and audit stages shown here are the architecture path; '
         f'this demo executes the graph and governance decision.</p></div>'
