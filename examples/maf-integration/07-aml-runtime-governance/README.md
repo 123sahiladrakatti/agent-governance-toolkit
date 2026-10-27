@@ -1,16 +1,30 @@
-# AML Runtime Governance Demo
+# Generic Runtime Governance Framework
 
-A self-contained Streamlit demo of runtime governance for a long-running AML investigation agent. It separates deterministic authorization, NeMo Guardrails content monitoring during agent work, and final AGT Action Governance. The NeMo content verdict is consumed by AGT's Action Governance decision; NeMo is not an AGT AuthorityResolver and does not recompute AML correctness.
+This project has a domain-agnostic governance core with AML retained as one reference implementation. A customer supplies a declared system description, a per-run trace, AGT policy JSON, NeMo settings, and optionally a correctness component. The framework always runs deterministic authorization, generic provenance/version checks, NeMo content monitoring, and final AGT Action Governance. Domain correctness is optional.
 
-The simulation uses synthetic transactions and no real SAR filing. When Ollama is available, NeMo checks each authorized agent output with the `self_check_output` rail for explicit prompt-injection content. The session includes two independent governance cases: a transaction-analysis agent misreads deposits and returns an incorrect `CLEAR`, and a screening agent flags a probable watchlist match while disposition consumes an older `no-hit` case-state version and clears the customer without reconciliation. Use the **Case to inspect** selector to switch between them. NeMo checks content only; the behavioral resolver checks record correctness and cross-agent consistency.
+The two ingestion inputs are deliberately separate:
 
-In this demo, **potential structuring** means at least three cash deposits, each below $10,000, whose total is at least $30,000 and whose qualifying deposits fall within a five-day window. **Not structuring** means only that this synthetic rule was not met; it is not proof that the activity is legitimate and does not suppress other AML signals. A flag is a policy input, not an accusation or legal conclusion. `CLEAR`, `ESCALATE`, and `FILE_SAR` are simulated dispositions, and `FILE_SAR` is a referral label rather than a real filing.
+- `SystemDescription` declares agents, topology, and permissions. Permissions are never inferred from observed run data.
+- `PipelineRunTrace` carries records and observed step results. `adapt_trace` combines it with the declaration to produce the normalized `GraphOutcome`.
 
-Flagging is deliberately separated by control: AGT denies undeclared handoffs or actions before execution; NeMo checks the content of authorized outputs; the behavioral resolver recomputes branch findings from source records and detects stale or inconsistent fan-in state; and the final AGT Action Governance policy applies priority rules. Unauthorized actions and ordinary correctness failures are denied, an unreconciled conflict or NeMo-only content flag requires human review, and a clean authorized action is allowed. If NeMo is unavailable, that status remains visible; this demo allows the action only when deterministic authorization and correctness still pass.
+The optional customer contract is `CorrectnessComponent.check(trace, records) -> CorrectnessResult`. When it is absent, generic provenance and conflict checks still run and the result explicitly says domain correctness was not configured. The AML implementation is `aml.correctness.AmlCorrectnessComponent`.
 
-For the stale-screening case, state versions make the race visible (`hit`, v2 versus consumed `no-hit`, v1). The resolver marks it `unreconciled-conflict`, and AGT Action Governance routes it to human review rather than committing `CLEAR`. The impact is a prevented false clearance and an explicit reconciliation obligation; the example does not claim an actual sanctions match or make a real compliance determination.
+The Streamlit simulator is not tied to AML. Its frontend accepts only a user's business context, case information, and critical requirements. Agent count, topology, permissions, context capacity, policies, normalization, and model configuration remain backend concerns. One submission creates the multi-agent run, normalizes its trace, executes governance, and returns Continue, Human Review, or Block.
 
-The governance monitor is stateful across the run. It retains only the latest eight alert/account references, creates a checkpoint every five turns, and accumulates a weighted drift score from observed governance failures. The UI reports current turn, context pressure (`turns / 8`), retained context slots, checkpoints, and authorized-but-wrong actions. This demonstrates bounded working state without storing the full transcript.
+Context loss occurs naturally when the submitted envelope exceeds the backend handoff capacity; governance then identifies the first receiving agent with altered context, displays what was omitted, and routes the unresolved handoff according to policy. Short inputs that survive every handoff continue normally. Existing companies integrate their own pipeline/log adapter with `pipeline_ingestion.ingest_bundle` behind the frontend rather than asking end users to configure pipelines.
+
+The runtime sequence is:
+
+1. A customer pipeline or log adapter emits the declared system description and per-run trace.
+2. `adapt_trace` creates the normalized `GraphOutcome`.
+3. AGT checks declared permissions and customer policy.
+4. Generic integrity checks inspect provenance, consumed findings, versions, conflicts, and handoffs.
+5. NeMo checks authorized output content with the customer configuration.
+6. The optional correctness component checks customer records and expected domain results.
+7. The normalized signals go to AGT Action Governance.
+8. The framework returns Continue, Human Review, or Block with attribution, visualization, and audit evidence.
+
+AML-specific records, terminology, calculations, and correctness attribution remain isolated under `aml/` as a reference implementation; they are not assumptions made by the workbench.
 
 ## Run
 
@@ -39,11 +53,19 @@ This live smoke check is separate from the mocked unit tests and may fail if the
 
 ## Files
 
-- `domain.py`: transactions, customer profiles, alerts, agent actions, and record-relative structuring calculation.
-- `agent_sim.py`: reproducible long-running triage/investigation simulation and planted faults.
+- `system_description.py`: generic declared pipeline, per-run trace, ingestion adapter, and graph context codec.
+- `correctness.py`: optional customer correctness-component protocol and result contract.
+- `graph_integrity.py`: always-on, domain-independent provenance/version/conflict checks.
+- `pipeline_ingestion.py`: backend validation and normalization for portable customer governance bundles.
+- `context_simulation.py`: domain-neutral generated multi-agent chain with capacity-based context handoffs.
+- `aml/`: AML record calculations, correctness component, declared diamond, and record codec.
+- `domain.py`: normalized `GraphStep`/`GraphOutcome` plus legacy AML/chain compatibility models.
+- `agent_sim.py`: AML reference trace generator and planted faults, normalized through `adapt_trace`.
 - `governance.py`: architecture-aligned deterministic top gate, NeMo middle-layer monitor, record-relative correctness checker, final AGT Action Governance, and bounded session metrics.
-- `nemo_guardrails.py`: lazy NeMo output-rail adapter and per-session verdict aggregation.
-- `agt_resolver.py`: diamond-path behavioral correctness resolver followed by the separate final Action Governance policy.
-- `app.py`: manager-facing Streamlit scoreboard, three-stage verdict rows, and long-running session health metrics.
+- `nemo_guardrails.py`: lazy NeMo output-rail adapter with injectable config/model/prompts and verdict aggregation.
+- `agt_resolver.py`: generic governor/resolver orchestration with injected policies, system description, and optional correctness.
+- `app.py`: domain-agnostic ingestion and governance simulator with an event stream, final decision, attribution, and audit evidence.
 - `test_aml_governance.py`: deterministic governance behavior tests.
 - `test_nemo_integration.py`: isolated adapter and Action Governance tests using mocked NeMo verdicts.
+- `test_generic_governance.py`: non-AML ingestion, permission, provenance, and governor tests.
+- `test_pipeline_ingestion.py`: customer bundle normalization and permission-boundary tests.

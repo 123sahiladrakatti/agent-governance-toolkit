@@ -1,163 +1,99 @@
-"""Streamlit demo: AML pipeline with AGT gates and NeMo content monitoring.
 
-The intake agent fans one alert out to three parallel branches
-(customer-screening, transaction-analysis, kyc-entity); the decision agent merges
-them. The demo shows both a transaction misread masked by clean siblings and a
-screening hit omitted from the disposition agent's stale case-state version. AGT
-checks authorization before actions run, NeMo monitors output content during
-agent work, the behavioral resolver checks correctness and consistency, and a
-separate AGT Action Governance policy produces the final decision.
+"""AML reference UI running on the domain-agnostic governance framework.
 
-Run:  streamlit run app.py
+Run: streamlit run app.py
 """
 
 from __future__ import annotations
 
 import html
-from types import SimpleNamespace
+import json
+from datetime import date, datetime, time
 
 import streamlit as st
 
-from agent_sim import (
-    DIAMOND_NODE_ID,
-    DISPOSITION_AGENT,
-    KYC_AGENT,
-    SANCTIONS_AGENT,
-    TRANSACTION_AGENT,
-    TRIAGE_AGENT,
-    run_diamond_session,
-)
-from agt_resolver import GraphGovernor, POLICY_VERSION, attribute_graph
+from agent_sim import DISPOSITION_AGENT, SANCTIONS_AGENT, build_diamond
+from agt_resolver import GraphGovernor
 from domain import (
-    CTR_THRESHOLD,
-    STRUCTURING_AGGREGATE,
-    STRUCTURING_MIN_DEPOSITS,
-    STRUCTURING_WINDOW_DAYS,
-    recompute_structuring,
+    Alert,
+    CustomerProfile,
+    GraphOutcome,
+    SANCTIONS_WATCHLIST,
+    Transaction,
 )
+from graph_integrity import check_graph_integrity
 
-st.set_page_config(page_title="AGT Graph Governance", page_icon="\u25c6", layout="wide")
+
+st.set_page_config(page_title="Governed AML Simulation", page_icon="◆", layout="wide")
 
 st.markdown("""
 <style>
-:root { --ink:#17212b; --muted:#667580; --line:#d7e0e5; --paper:#f5f7f6; --green:#176b45; --green-bg:#e7f5ed; --red:#b12632; --red-bg:#fff0f1; --gold:#9a6819; --amber-bg:#fbf3e2; --blue:#1f5c8a; --blue-bg:#eaf2f9; }
-html, body, [class*="css"] { font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,sans-serif; }
-.stApp { background:var(--paper); color:var(--ink); } .block-container { max-width:1180px; padding:2rem 1.5rem 4rem; }
-.agt-bar { display:flex; align-items:center; gap:.8rem; flex-wrap:wrap; padding:.6rem .9rem; border:1px solid var(--line); background:#fff; margin-bottom:.8rem; font-size:.86rem; }
-.pill { display:inline-block; padding:.22rem .55rem; font:700 .76rem ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.02em; }
-.pill.live { color:var(--green); background:var(--green-bg); border:1px solid #b7dcc6; } .pill.fallback { color:var(--gold); background:var(--amber-bg); border:1px solid #ecd9ad; }
-.agt-bar code, .mono { font:.8rem ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--muted); }
-.hero { padding:1.6rem 1.7rem; border:1px solid var(--line); background:#fff; }
-.hero .kicker { color:var(--muted); font-size:.85rem; margin:0 0 .5rem; }
-.hero h1 { margin:.1rem 0 .5rem; font-size:clamp(1.7rem,3.2vw,2.5rem); letter-spacing:-.03em; line-height:1.1; }
-.hero p { max-width:820px; margin:0; color:var(--muted); font-size:1rem; line-height:1.55; }
-.primer-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.7rem; margin:.8rem 0 1rem; }
-.primer-card { border:1px solid var(--line); background:#fff; padding:1rem 1.1rem; }
-.primer-card h4 { margin:0 0 .4rem; font-size:.96rem; }
-.primer-card p { margin:0; color:var(--muted); font-size:.87rem; line-height:1.5; }
-.primer-card code { font-size:.78rem; }
-.rule-table td:first-child { width:24%; font-weight:700; }
-.stage-tag { margin:2rem 0 .35rem; color:var(--muted); font-size:.9rem; }
-.stage-title { margin:.1rem 0 .3rem; font-size:1.4rem; letter-spacing:-.02em; }
-.stage-help { color:var(--muted); font-size:.92rem; margin:0 0 1rem; max-width:800px; line-height:1.5; }
-.scene { border:1px solid var(--line); background:#fff; padding:1.2rem 1.3rem; margin-bottom:1rem; }
-.scene h4 { margin:0 0 .7rem; font-size:1.02rem; }
-.facts { width:100%; border-collapse:collapse; font-size:.9rem; }
-.facts th, .facts td { text-align:left; padding:.42rem .6rem; border-bottom:1px solid var(--line); vertical-align:top; }
-.facts th { color:var(--muted); font-weight:600; } .facts td.num { text-align:right; font-variant-numeric:tabular-nums; }
-.facts tr.bad td { background:var(--red-bg); } .facts td.ok { color:var(--green); font-weight:700; } .facts td.no { color:var(--red); font-weight:700; }
-/* pipeline */
-.pipe { display:grid; grid-template-columns:repeat(4,1fr); gap:.5rem; margin:.2rem 0 0; }
-.pipe .st { border:1px solid var(--line); background:#fff; padding:.75rem .8rem; font-size:.84rem; line-height:1.4; position:relative; }
-.pipe .st b { display:block; font-size:.88rem; margin-bottom:.2rem; } .pipe .st span { color:var(--muted); }
-.pipe .st.ours { border:2px solid var(--blue); background:var(--blue-bg); } .pipe .st.ours b { color:var(--blue); }
-.pipe .who { display:inline-block; margin-top:.45rem; padding:.1rem .35rem; font:700 .68rem ui-monospace,monospace; }
-.pipe .who.agt { color:var(--muted); background:#eef1f3; } .pipe .who.us { color:#fff; background:var(--blue); }
-.flowchart { display:grid; justify-items:center; gap:.24rem; margin:1rem auto 1.5rem; max-width:1020px; }
-.flow-node { width:min(72%,720px); padding:.48rem .7rem; border:1px solid var(--line); background:#fff; text-align:center; line-height:1.25; }
-.flow-node b { display:block; font-size:.84rem; } .flow-node small { color:var(--muted); font-size:.72rem; }
-.flow-node.policy { border:2px solid #67a77d; background:#eef7ef; }
-.flow-node.alert { border:2px solid #79a7cf; background:#eef5fb; }
-.flow-node.case { border:2px solid #9280b3; background:#f4f0fa; }
-.flow-node.shared { border:2px solid #c09b50; background:#fbf5e8; }
-.flow-node.signal { border:2px solid #9280b3; background:#f4f0fa; }
-.flow-node.gate { border:2px solid #c66b70; background:#fff0f1; width:min(88%,880px); }
-.flow-node.conflict { border:2px solid #c09b50; background:#fbf5e8; }
-.flow-node.stale { border:2px solid #c66b70; background:#fff0f1; }
-.state-conflict { display:grid; grid-template-columns:1fr auto 1fr; gap:.65rem; align-items:center; width:min(88%,880px); }
-.state-version { padding:.48rem .65rem; border:1px solid var(--line); background:#fff; text-align:center; line-height:1.3; }
-.state-version b { display:block; font-size:.8rem; } .state-version small { color:var(--muted); font-size:.72rem; }
-.state-version.current { border:2px solid #c09b50; background:#fbf5e8; }
-.state-version.stale { border:2px solid #c66b70; background:#fff0f1; }
-.state-arrow { color:var(--red); font-size:.75rem; font-weight:700; text-align:center; }
-.flow-arrow { color:var(--muted); font-size:1.05rem; font-weight:600; line-height:1.1; margin:.15rem 0; }
-.flow-branches,.flow-outcomes,.flow-downstream { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.5rem; width:min(92%,920px); position:relative; margin-top:34px; overflow:visible; }
-/* BUS: one horizontal line spanning from the centre of box 1 to the centre of box 3. */
-.flow-outcomes::before,.flow-downstream::before { content:""; position:absolute; top:-20px; left:16.667%; right:16.667%; height:2px; background:var(--muted); z-index:0; }
-/* FEEDER: vertical line from the spine arrow DOWN THROUGH the bus (overlaps it, no gap). */
-.flow-outcomes::after,.flow-downstream::after { content:""; position:absolute; top:-34px; left:calc(50% - 1px); width:2px; height:16px; background:var(--muted); z-index:0; }
-/* DROPS: from ABOVE the bus (-22px) down INTO each box top (+2px) so both ends overlap, no gaps. */
-.flow-outcomes > *::before,.flow-downstream > *::before { content:""; position:absolute; top:-22px; left:calc(50% - 1px); width:2px; height:24px; background:var(--muted); z-index:0; }
-.flow-outcomes > *,.flow-downstream > * { position:relative; }
-.flow-outcomes > * > *,.flow-downstream > * > * { position:relative; z-index:1; }
-/* CONTINUE connector: an L-path from under the CONTINUE box (right third) across to the centre, then down into Disposition. */
-.continue-connector { position:relative; width:min(92%,920px); height:44px; margin:2px auto 0; }
-/* label */
-.continue-connector span { position:absolute; top:12px; left:50%; transform:translateX(-50%); color:var(--muted); font-size:.92rem; font-weight:600; white-space:nowrap; background:var(--paper); padding:0 .4rem; z-index:2; }
-/* 1: vertical drop straight down from under the CONTINUE box */
-.continue-connector::before { content:""; position:absolute; top:0; right:16.667%; width:2px; height:22px; background:var(--muted); }
-/* 2: horizontal run leftwards to the centre at y=22, PLUS the centre drop down into Disposition via box-shadow at the left end */
-.continue-connector::after { content:""; position:absolute; top:22px; left:50%; width:calc(33.333% + 2px); height:2px; background:var(--muted); }
-/* 3: the centre vertical drop into Disposition */
-.continue-drop { content:""; position:absolute; top:22px; left:calc(50% - 1px); width:2px; height:24px; background:var(--muted); }
-.flow-reasoning { display:grid; grid-template-columns:minmax(0,1fr) 220px; gap:.55rem; width:min(82%,820px); align-items:center; }
-.flow-outcomes .block { border-color:#c66b70; background:#fff0f1; }
-.flow-outcomes .human { border-color:#c09b50; background:#fbf5e8; }
-.flow-outcomes .continue { border-color:#67a77d; background:#eef7ef; }
-.flow-outcomes .active { box-shadow:0 0 0 2px currentColor; font-weight:700; }
-/* lanes */
-.lane { border:1px solid var(--line); background:#fff; padding:1.1rem 1.15rem; height:100%; }
-.lane.pass { border-color:#b7dcc6; background:#fbfdfb; } .lane.deny { border:2px solid var(--red); background:var(--red-bg); } .lane.halt { border-color:#e4aeb2; background:#fff8f8; }
-.lane.review { border:2px solid #c09b50; background:#fbf5e8; } .lane.review .verdict { color:var(--gold); }
-.lane.neutral { border-color:var(--line); background:#f5f7f6; } .lane.neutral .verdict { color:var(--muted); }
-.lane .src { font:700 .72rem ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--muted); margin:0 0 .35rem; letter-spacing:.02em; }
-.lane .q { color:var(--muted); font-size:.86rem; margin:0 0 .5rem; }
-.lane .verdict { font-weight:800; font-size:1.25rem; margin:0 0 .5rem; letter-spacing:-.01em; }
-.lane.pass .verdict { color:var(--green); } .lane.deny .verdict, .lane.halt .verdict { color:var(--red); }
-.lane .body { color:var(--ink); font-size:.9rem; line-height:1.5; margin:0; }
-.lane ul { margin:.3rem 0 0; padding-left:1.1rem; font-size:.84rem; } .lane li { margin:.1rem 0; }
-.takeaway { margin:1rem 0 0; padding:1rem 1.2rem; background:var(--amber-bg); border:1px solid #ecd9ad; font-size:.96rem; line-height:1.55; }
-.control-box { padding:1rem 1.2rem; border:1px solid var(--line); background:#fff; } .control-label { margin-bottom:.3rem; font-weight:700; } .control-help { color:var(--muted); font-size:.85rem; }
-.score { display:grid; grid-template-columns:repeat(6,1fr); gap:.75rem; margin:1.2rem 0; } .metric { min-height:88px; padding:1rem; border:1px solid var(--line); background:#fff; } .metric strong { display:block; font-size:1.9rem; } .metric small { color:var(--muted); } .metric.hot { border-color:#e4aeb2; background:#fff8f8; } .metric.hot strong { color:var(--red); }
-.diamond { width:100%; height:auto; display:block; }
-.status.neutral { color:var(--gold); background:var(--amber-bg); }
-@media(max-width:820px){ .primer-grid,.pipe{grid-template-columns:1fr} .flow-node,.flow-node.gate,.flow-branches,.flow-outcomes,.flow-downstream,.flow-reasoning,.state-conflict{width:100%} .flow-branches,.flow-outcomes,.flow-downstream,.flow-reasoning,.state-conflict{grid-template-columns:1fr} .score{grid-template-columns:repeat(2,1fr)} .block-container{padding:1rem .8rem 3rem} }
+:root { --ink:#17212b; --muted:#667580; --line:#d7e0e5; --paper:#f5f7f6; --green:#176b45; --green-bg:#e7f5ed; --red:#b12632; --red-bg:#fff0f1; --gold:#9a6819; --amber-bg:#fbf3e2; --blue:#1f5c8a; --blue-bg:#eaf2f9; --purple:#67558b; --purple-bg:#f4f0fa; }
+html,body,[class*="css"] { font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,sans-serif; }
+.stApp { background:var(--paper); color:var(--ink); }
+.block-container { max-width:1180px; padding:1.7rem 1.5rem 4rem; }
+.hero { border:1px solid var(--line); background:#fff; padding:1.45rem 1.6rem; }
+.hero .kicker { color:var(--blue); font:700 .75rem ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.05em; }
+.hero h1 { margin:.3rem 0 .45rem; font-size:clamp(1.8rem,3.2vw,2.55rem); letter-spacing:-.035em; }
+.hero p { max-width:880px; margin:0; color:var(--muted); line-height:1.55; }
+.section-label { color:var(--muted); font:700 .74rem ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.04em; margin:1.8rem 0 .35rem; }
+.section-title { margin:.1rem 0 .35rem; font-size:1.35rem; }
+.section-help { color:var(--muted); margin:0 0 .9rem; font-size:.9rem; line-height:1.5; }
+.watchlist { border:1px solid #ecd9ad; background:var(--amber-bg); padding:.75rem .9rem; font-size:.85rem; margin:.7rem 0; }
+.simulator { border:1px solid var(--line); background:#fff; padding:1.2rem; }
+.event { display:grid; grid-template-columns:18px 205px 105px 1fr; gap:.65rem; align-items:start; padding:.62rem 0; border-bottom:1px solid var(--line); font-size:.85rem; }
+.event:last-child { border-bottom:0; }
+.event .dot { width:11px; height:11px; border-radius:50%; margin-top:.24rem; background:var(--muted); }
+.event.pass .dot { background:var(--green); }
+.event.fail .dot { background:var(--red); }
+.event.review .dot { background:var(--gold); }
+.event .phase { font-weight:700; }
+.event .status { font:700 .72rem ui-monospace,SFMono-Regular,Menlo,monospace; }
+.event.pass .status { color:var(--green); }
+.event.fail .status { color:var(--red); }
+.event.review .status { color:var(--gold); }
+.event .detail { color:var(--muted); line-height:1.4; }
+.verdict { padding:1.3rem; border:2px solid var(--line); background:#fff; margin:1rem 0; }
+.verdict.continue { border-color:#67a77d; background:var(--green-bg); }
+.verdict.review { border-color:#c09b50; background:var(--amber-bg); }
+.verdict.block { border-color:var(--red); background:var(--red-bg); }
+.verdict .label { font:700 .72rem ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--muted); }
+.verdict h2 { margin:.25rem 0 .55rem; font-size:2rem; }
+.verdict.continue h2 { color:var(--green); }
+.verdict.review h2 { color:var(--gold); }
+.verdict.block h2 { color:var(--red); }
+.verdict p { margin:.25rem 0; line-height:1.5; }
+.why-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:.6rem; margin-top:.8rem; }
+.why-grid div { border:1px solid rgba(102,117,128,.28); background:rgba(255,255,255,.72); padding:.7rem; }
+.why-grid small { display:block; color:var(--muted); font-weight:700; text-transform:uppercase; }
+.why-grid strong { display:block; margin-top:.25rem; overflow-wrap:anywhere; }
+.state-compare { display:grid; grid-template-columns:1fr 1fr; gap:.65rem; margin:.8rem 0; }
+.state-card { border:1px solid #b7dcc6; background:var(--green-bg); padding:.85rem; }
+.state-card.stale { border-color:#e4aeb2; background:var(--red-bg); }
+.state-card small { display:block; color:var(--muted); text-transform:uppercase; font-weight:700; }
+.state-card strong { display:block; margin-top:.3rem; }
+.pill { display:inline-block; padding:.2rem .5rem; font:700 .72rem ui-monospace,SFMono-Regular,Menlo,monospace; }
+.pill.live { color:var(--green); background:var(--green-bg); border:1px solid #b7dcc6; }
+.pill.fallback { color:var(--gold); background:var(--amber-bg); border:1px solid #ecd9ad; }
+@media(max-width:760px) { .why-grid,.state-compare { grid-template-columns:1fr; } .event { grid-template-columns:18px 1fr; } .event .status,.event .detail { grid-column:2; } }
 </style>
 """, unsafe_allow_html=True)
 
 
-def money(v: float) -> str:
-    return f"${v:,.0f}"
+def esc(value: object) -> str:
+    return html.escape(str(value))
 
 
-def esc(s: object) -> str:
-    return html.escape(str(s))
+def normalize_date(value: object) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime.combine(value, time.min)
+    return datetime.fromisoformat(str(value))
 
-
-governor = GraphGovernor()
-
-# --------------------------------------------------------------------------- AGT status bar
-if governor.agt_live:
-    status_pill = '<span class="pill live">AGT PolicyEngine: LIVE</span>'
-    status_text = (f'<code>{esc(governor.engine_class)}</code> &middot; behavioral resolver supplies the correctness signal; '
-                   'a separate Action Governance policy produces the final PolicyDecision.')
-else:
-    status_pill = '<span class="pill fallback">AGT PolicyEngine: fallback</span>'
-    status_text = ('AGT policy fallback active; NeMo availability is reported separately on each run. '
-                   'Install <code>agent-governance-toolkit-core</code> to execute the policies inside AGT.')
-st.markdown(f'<div class="agt-bar">{status_pill}<span>{status_text}</span></div>', unsafe_allow_html=True)
 
 st.markdown(
+<<<<<<< HEAD
     '<div class="hero">'
     '<p class="kicker">Runtime agent governance on a fan-out / fan-in AML investigation graph</p>'
     '<h1>Conflicting agent views need reconciliation before clearance.</h1>'
@@ -169,132 +105,68 @@ st.markdown(
     'the behavioral resolver checks consistency and correctness; NeMo checks output content; final Action '
     'Governance blocks or routes the unresolved case to human review.</p>'
     '</div>',
+=======
+    '<div class="hero"><div class="kicker">AML REFERENCE IMPLEMENTATION</div>'
+    '<h1>Enter a case. Watch the governance framework evaluate it.</h1>'
+    '<p>AML is the visible example, while authorization, trace integrity, NeMo monitoring, optional correctness, '
+    'Action Governance, attribution, and audit remain domain-agnostic framework capabilities.</p></div>',
+>>>>>>> 0b063cce (Updated code)
     unsafe_allow_html=True,
 )
 
-# --------------------------------------------------------------------------- primer
-st.markdown('<p class="stage-tag">Before you run it</p>', unsafe_allow_html=True)
-st.markdown('<h2 class="stage-title">What the AML terms and flags mean in this demo</h2>', unsafe_allow_html=True)
+# --------------------------------------------------------------------------- AML input
+st.markdown('<p class="section-label">RUN THE AML REFERENCE</p>', unsafe_allow_html=True)
+st.markdown('<h2 class="section-title">Customer and transaction information</h2>', unsafe_allow_html=True)
 st.markdown(
-    f'<div class="primer-grid">'
-    f'<div class="primer-card"><h4>Potential structuring</h4><p>Structuring generally means breaking cash activity into smaller '
-    f'transactions to avoid reporting or scrutiny. This synthetic rule flags a pattern only when there are at least '
-    f'<b>{STRUCTURING_MIN_DEPOSITS} cash deposits</b>, each below <b>{money(CTR_THRESHOLD)}</b>, totalling at least '
-    f'<b>{money(STRUCTURING_AGGREGATE)}</b>, with the '
-    f'qualifying deposits contained within <b>{STRUCTURING_WINDOW_DAYS} days</b>.</p></div>'
-    f'<div class="primer-card"><h4>\u201cNot structuring\u201d</h4><p>This means only that the records did <b>not meet the demo rule</b>. '
-    f'It is not proof that activity is legitimate, and it does not override sanctions, KYC, or other monitoring signals.</p></div>'
-    f'<div class="primer-card"><h4>Flag versus disposition</h4><p>A <b>flag</b> is a signal that needs policy handling; it is not an '
-    f'accusation or final legal conclusion. <code>CLEAR</code>, <code>ESCALATE</code>, and <code>FILE_SAR</code> are simulated '
-    f'dispositions. No real SAR is filed by this application.</p></div>'
-    f'<div class="primer-card"><h4>Why there are several flag types</h4><p>Authorization, output safety, and AML correctness answer '
-    f'different questions. A permitted action can still contain unsafe text or be factually wrong, so the signals stay separate '
-    f'until the final AGT policy evaluates them.</p></div>'
-    f'</div>',
+    '<p class="section-help">The frontend collects case records only. The AML adapter and the generic governance '
+    'architecture run behind the application.</p>',
+    unsafe_allow_html=True,
+)
+st.markdown(
+    '<div class="watchlist"><b>Demo watchlist:</b> '
+    + ' &middot; '.join(f'<code>{esc(name)}</code>' for name in sorted(SANCTIONS_WATCHLIST))
+    + '<br>Use an exact watchlist name to demonstrate a new screening hit that the decision agent receives as stale state.</div>',
     unsafe_allow_html=True,
 )
 
-with st.expander("How an alert is checked and how the final outcome is chosen", expanded=True):
-    st.markdown(
-        """
-1. **AGT authorization runs first.** Every handoff must follow a declared graph edge, and the receiving agent's action must be in its delegated action set. A failure is denied before that recipient runs.
-2. **Authorized agents produce findings.** Screening checks the demo watchlist, transaction analysis applies the synthetic structuring rule, and KYC checks whether the required customer profile fields are present.
-3. **NeMo monitors output content.** It runs only on authorized outputs and applies the configured `self_check_output` rail. It can flag unsafe or prompt-injection-like content, but it does not decide whether the AML finding is correct and it never grants authority.
-4. **The behavioral resolver recomputes from records.** It compares each reported branch finding with source data, verifies that the decision agent consumed current parent versions, and checks that the merged disposition follows those inputs.
-5. **AGT Action Governance makes the final decision.** It consumes authorization, resolver correctness, and NeMo status using the priority rules below. The first applicable high-priority rule determines the result.
-        """
-    )
-    st.markdown(
-        """
-<table class="facts rule-table">
-<thead><tr><th>Signal seen by final policy</th><th>Result</th><th>Why</th></tr></thead>
-<tbody>
-<tr><td>Unauthorized action</td><td class="no">DENY / BLOCK</td><td>The agent was not permitted to perform the action.</td></tr>
-<tr><td>Unreconciled stale or conflicting state</td><td><b style="color:var(--gold)">HUMAN REVIEW</b></td><td>A person must reconcile the competing findings before a clearance can commit.</td></tr>
-<tr><td>Other record-relative correctness failure</td><td class="no">DENY / BLOCK</td><td>The reported or merged result conflicts with the source records.</td></tr>
-<tr><td>NeMo content flag only</td><td><b style="color:var(--gold)">HUMAN REVIEW</b></td><td>The action was authorized and may be correct, but its content needs review.</td></tr>
-<tr><td>Authorization and correctness pass; NeMo passes</td><td class="ok">ALLOW / CONTINUE</td><td>All configured signals permit the action.</td></tr>
-<tr><td>Authorization and correctness pass; NeMo unavailable</td><td class="ok">ALLOW / CONTINUE</td><td>This demo allows the action but reports that content monitoring did not run.</td></tr>
-</tbody></table>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.caption("Demo thresholds and dispositions are illustrative controls, not legal advice or a production SAR determination.")
+default_transactions = [
+    {"id": "T-001", "date": date(2026, 1, 5), "type": "cash_deposit", "amount": 2_500.0, "branch": "BR-01"},
+    {"id": "T-002", "date": date(2026, 1, 6), "type": "cash_deposit", "amount": 1_500.0, "branch": "BR-01"},
+]
 
-# --------------------------------------------------------------------------- controls
-c1, c2, c3 = st.columns([1.2, 1, 1.2])
-with c1:
-    st.markdown('<div class="control-box"><div class="control-label">Batch size</div><div class="control-help">Alerts to check (star case at #7).</div></div>', unsafe_allow_html=True)
-    count = st.slider("Alerts", 8, 40, 8, label_visibility="collapsed")
-with c2:
-    st.markdown('<div class="control-box"><div class="control-label">Replay seed</div><div class="control-help">Same seed reproduces the run.</div></div>', unsafe_allow_html=True)
-    seed = int(st.number_input("Seed", min_value=1, value=7, step=1, label_visibility="collapsed"))
-with c3:
-    st.markdown('<div class="control-box"><div class="control-label">Run the pipeline</div><div class="control-help">Calls NeMo for each authorized agent output.</div></div>', unsafe_allow_html=True)
-    run_pipeline = st.button("Evaluate graph session", type="primary", use_container_width=True)
-
-review_key = ("nemo-rail-decision-v2", count, seed)
-if st.session_state.get("diamond_review_key") != review_key:
-    st.session_state.pop("diamond_reviews", None)
-
-if run_pipeline:
-    session = run_diamond_session(count, seed)
-    progress = st.progress(0, text="Running deterministic gates, NeMo checks, and Action Governance")
-    reviews = []
-    for index, outcome in enumerate(session, start=1):
-        reviews.append(governor.review(outcome))
-        progress.progress(index / len(session), text=f"Evaluated alert {index} of {len(session)}")
-    st.session_state.diamond_review_key = review_key
-    st.session_state.diamond_reviews = reviews
-    progress.empty()
-
-reviews = st.session_state.get("diamond_reviews", [])
-has_live_review = bool(reviews)
-if has_live_review:
-    case_options = {
-        "Transaction misread - incorrect CLEAR": next(r for r in reviews if r.outcome.is_star_case),
-        "Screening conflict - stale case state": next(r for r in reviews if r.outcome.is_conflict_case),
-    }
-    selected_case = st.radio("Case to inspect", list(case_options), horizontal=True)
-    star = case_options[selected_case]
-else:
-    preview_cases = run_diamond_session(count, seed)
-    case_options = {
-        "Transaction misread - incorrect CLEAR": next(item for item in preview_cases if item.is_star_case),
-        "Screening conflict - stale case state": next(item for item in preview_cases if item.is_conflict_case),
-    }
-    selected_case = st.radio("Case to inspect", list(case_options), horizontal=True)
-    preview_outcome = case_options[selected_case]
-    preview_handoffs = tuple(
-        SimpleNamespace(
-            sender=sender,
-            recipient=recipient,
-            passed=True,
-            decision="PENDING",
-            rule="not evaluated",
-            reason="Run the pipeline to evaluate this handoff.",
+with st.form("aml-case-input"):
+    c1, c2 = st.columns(2)
+    with c1:
+        customer_name = st.text_input("Customer name", placeholder="Jane Smith")
+        account_id = st.text_input("Account ID", value="ACCT-DEMO-001")
+    with c2:
+        occupation = st.text_input("Occupation", value="business owner")
+        expected_cash = st.number_input(
+            "Expected monthly cash volume", min_value=0.0, value=8_000.0, step=500.0
         )
-        for sender, recipient in preview_outcome.edges
+    monitoring_rule = st.text_input(
+        "Monitoring rule", value="customer and transaction activity review"
     )
-    star = SimpleNamespace(
-        outcome=preview_outcome,
-        handoffs=preview_handoffs,
-        attribution=attribute_graph(preview_outcome.alert, preview_outcome.steps),
-        content_checks=tuple(
-            {"agent": step.agent, "passed": True, "rail": "pending", "reason": "NeMo runs when you evaluate the session."}
-            for step in preview_outcome.steps
-        ),
-        nemo_live=False,
-        policy_decision={},
-        authority_decision={"decision": "pending"},
-        status="pending",
+    edited_transactions = st.data_editor(
+        default_transactions,
+        num_rows="dynamic",
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "id": st.column_config.TextColumn("Transaction ID", required=True),
+            "date": st.column_config.DateColumn("Date", required=True),
+            "type": st.column_config.SelectboxColumn(
+                "Type", options=["cash_deposit", "wire", "card_payment", "cash_withdrawal"], required=True
+            ),
+            "amount": st.column_config.NumberColumn("Amount", min_value=0.01, format="$%.2f", required=True),
+            "branch": st.column_config.TextColumn("Branch", required=True),
+        },
     )
-    star.is_conflict_case = preview_outcome.is_conflict_case
-alert = star.outcome.alert
-truth = recompute_structuring(alert)
-steps = {s.agent: s for s in star.outcome.steps}
-checks = {c.agent: c for c in star.attribution.branch_checks}
+    submitted = st.form_submit_button(
+        "Submit case to governed pipeline", type="primary", width="stretch"
+    )
 
+<<<<<<< HEAD
 # --------------------------------------------------------------------------- scene 1: records
 st.markdown('<p class="stage-tag">Walkthrough &middot; one alert through the diamond</p>', unsafe_allow_html=True)
 st.markdown(f'<h2 class="stage-title">{esc(alert.alert_id)} &middot; {esc(alert.customer.name)}</h2>', unsafe_allow_html=True)
@@ -353,40 +225,73 @@ def diamond_svg(review) -> str:
                 "used a stale version of screening\u2019s finding"
                 if stale_conflict else
                 "confident: 3/3 branches clean" if st_.finding.endswith("(3/3 branches clean)") else st_.finding
+=======
+if submitted:
+    st.session_state.pop("aml_review", None)
+    try:
+        if not customer_name.strip():
+            raise ValueError("Customer name is required")
+        if not account_id.strip():
+            raise ValueError("Account ID is required")
+        if not occupation.strip():
+            raise ValueError("Occupation is required for this reference run")
+        rows = (
+            edited_transactions.to_dict("records")
+            if hasattr(edited_transactions, "to_dict") else list(edited_transactions)
+        )
+        if not rows:
+            raise ValueError("Add at least one transaction")
+        transactions = tuple(
+            Transaction(
+                id=str(row["id"]),
+                account_id=account_id.strip(),
+                amount=float(row["amount"]),
+                type=str(row["type"]),
+                timestamp=normalize_date(row["date"]),
+                branch=str(row["branch"]),
+>>>>>>> 0b063cce (Updated code)
             )
-        elif agent == TRIAGE_AGENT:
-            fill, stroke, sw, tone = "#ffffff", "#d7e0e5", 1, "#17212b"
-            line2, line3 = "routes to B, C, D", ""
-        else:
-            if not content_passed:
-                fill, stroke, sw, tone = "#fff0f1", "#b12632", 2, "#b12632"
-            elif rail == "unavailable":
-                fill, stroke, sw, tone = "#fbf3e2", "#c09b50", 1.5, "#765016"
-            else:
-                fill, stroke, sw, tone = "#ffffff", "#b7dcc6", 1.5, "#176b45"
-            line2, line3 = f"reports: {st_.finding}", "content check below"
-        if c is not None and not c.matches:
-            correctness_label = "records: diverged"
-        elif c is not None:
-            correctness_label = "records: match"
-        else:
-            correctness_label = "records: not applicable"
-        if rail == "unavailable":
-            nemo_tone = "#765016"
-        elif rail == "pending":
-            nemo_tone = "#9a6819"
-        elif not content_passed:
-            nemo_tone = "#b12632"
-        else:
-            nemo_tone = "#176b45"
-        return (f'<rect x="{x}" y="{y}" width="{BW}" height="{BH}" rx="6" fill="{fill}" stroke="{stroke}" stroke-width="{sw}"/>'
-                f'<text x="{x + 12}" y="{y + 24}" font-size="14" font-weight="700" fill="#17212b">{st_.node_id} &#183; {esc(agent)}</text>'
-                f'<text x="{x + 12}" y="{y + 42}" font-size="11.5" fill="#667580">{esc(role[agent])}</text>'
-                f'<text x="{x + 12}" y="{y + 62}" font-size="13" font-weight="700" fill="{tone}">{esc(line2)}</text>'
-                f'<text x="{x + 12}" y="{y + 80}" font-size="10.5" fill="{tone}">{esc(line3)}</text>'
-                f'<text x="{x + 12}" y="{y + 96}" font-size="10.5" fill="#667580">{correctness_label}</text>'
-                f'<text x="{x + 12}" y="{y + 108}" font-size="9.5" font-weight="700" fill="{nemo_tone}">{esc(nemo_label)}</text>')
+            for row in rows
+        )
+        customer = CustomerProfile(
+            account_id=account_id.strip(),
+            name=customer_name.strip(),
+            stated_occupation=occupation.strip(),
+            expected_monthly_cash_volume=float(expected_cash),
+        )
+        alert = Alert(
+            alert_id="AML-INTERACTIVE",
+            account_id=account_id.strip(),
+            transactions=transactions,
+            customer=customer,
+            monitoring_rule=monitoring_rule.strip(),
+        )
+        watchlist_hit = customer.name in SANCTIONS_WATCHLIST
+        progress = st.progress(10, text="AML adapter is creating the agent trace")
+        steps = build_diamond(alert, stale_screening_view=watchlist_hit)
+        outcome = GraphOutcome(
+            alert=alert,
+            steps=steps,
+            fault="stale-screening-view" if watchlist_hit else None,
+            is_conflict_case=watchlist_hit,
+            resource_id=f"aml-alert:{alert.alert_id}",
+        )
+        progress.progress(30, text="Normalizing the PipelineTrace")
+        governor = GraphGovernor()
+        progress.progress(45, text="Running authorization, NeMo, and correctness checks")
+        review = governor.review(outcome)
+        progress.progress(85, text="AGT Action Governance is combining signals")
+        st.session_state.aml_review = {
+            "review": review,
+            "integrity": check_graph_integrity(outcome),
+            "agt_live": governor.agt_live,
+        }
+        progress.progress(100, text="Governance decision complete")
+        progress.empty()
+    except (KeyError, TypeError, ValueError) as exc:
+        st.error(f"The case could not be processed: {exc}")
 
+<<<<<<< HEAD
     def edge(a: str, b: str) -> str:
         ax, ay = pos[a]; bx, by = pos[b]
         x1, y1, x2, y2 = ax + BW, ay + BH / 2, bx, by + BH / 2
@@ -515,167 +420,134 @@ st.markdown(
 
 if not has_live_review:
     st.info("The diagram is a no-call preview. Evaluate the graph session to run AGT policies and NeMo content checks.")
+=======
+result = st.session_state.get("aml_review")
+if result is None:
+    st.info("Enter customer and transaction information to run the AML reference through the framework.")
+>>>>>>> 0b063cce (Updated code)
     st.stop()
 
-# --------------------------------------------------------------------------- scene 3: governance stages
-st.markdown('<p class="stage-tag">Governance stages</p>', unsafe_allow_html=True)
-st.markdown('<h2 class="stage-title">The signals converge at AGT Action Governance</h2>', unsafe_allow_html=True)
+review = result["review"]
+integrity = result["integrity"]
+steps = {step.agent: step for step in review.outcome.steps}
+screening = steps[SANCTIONS_AGENT]
+decision = steps[DISPOSITION_AGENT]
+consumed_finding = decision.received_findings_by_parent[SANCTIONS_AGENT]
+consumed_version = decision.received_versions_by_parent[SANCTIONS_AGENT]
+action = str(review.policy_decision.get("action", "deny"))
+action_label = {"allow": "CONTINUE", "require_approval": "HUMAN REVIEW", "deny": "BLOCK"}.get(action, action.upper())
+verdict_css = {"allow": "continue", "require_approval": "review", "deny": "block"}.get(action, "block")
 
-n_ok = sum(h.passed for h in star.handoffs)
-hop_items = "".join(
-    f'<li>{DIAMOND_NODE_ID[h.sender]} &rarr; {DIAMOND_NODE_ID[h.recipient]} &nbsp;<b style="color:var(--{"green" if h.passed else "red"})">'
-    f'{esc(h.decision)}</b> <span class="mono">{esc(h.rule or "")}</span></li>' for h in star.handoffs
-)
-pd_ = star.policy_decision
-ad = star.authority_decision
-nemo_flags = [check for check in star.content_checks if not check["passed"]]
-nemo_unavailable = [check for check in star.content_checks if check["rail"] == "unavailable"]
-nemo_executed = [check for check in star.content_checks if check["rail"] not in {"unavailable", "skipped"}]
-nemo_status = "FLAG" if nemo_flags else ("PASS" if star.nemo_live else "UNAVAILABLE")
-nemo_css = "flag" if nemo_flags else ("pass" if star.nemo_live else "neutral")
-nemo_lane = "deny" if nemo_flags else ("pass" if star.nemo_live else "neutral")
-nemo_detail = "<br>".join(
-    f"{esc(check['agent'])}: {esc(check['rail'])} - {esc(check['reason'])}"
-    for check in star.content_checks
-)
-action_name = str(pd_.get("action", "deny"))
-action_label = {
-    "allow": "CONTINUE",
-    "require_approval": "HUMAN REVIEW",
-    "deny": "BLOCK",
-}.get(action_name, action_name.upper())
-action_lane = {"allow": "pass", "require_approval": "review", "deny": "deny"}.get(action_name, "deny")
-status_word = {"halted": "BLOCKED", "committed": "CONTINUED", "escalated": "HUMAN REVIEW"}[star.status]
-correctness_label = "PASS" if star.attribution.passed else "FLAG"
-
-l1, l2, l3, l4 = st.columns([1, 1, 1.2, 1.2])
-with l1:
-    st.markdown(
-        f'<div class="lane pass"><p class="src">TOP GATE - AGT DETERMINISTIC AUTHORIZATION</p>'
-        f'<p class="q">May each agent perform its delegated action?</p>'
-        f'<p class="verdict">{n_ok} / {len(star.handoffs)} AUTHORIZED</p>'
-        f'<p class="body">Every recipient action passed its pre-execution handoff policy.</p>'
-        f'<ul>{hop_items}</ul></div>',
-        unsafe_allow_html=True,
-    )
-with l2:
-    st.markdown(
-        f'<div class="lane {nemo_lane}">'
-        f'<p class="src">MIDDLE LAYER - NEMO CONTENT MONITOR</p>'
-        f'<p class="q">Did agent output trigger the configured content rail?</p>'
-        f'<p class="verdict">{nemo_status}</p>'
-        f'<p class="body">Checked {len(nemo_executed)} of {len(star.content_checks)} outputs; '
-        f'{len(nemo_flags)} flagged, {len(nemo_unavailable)} unavailable.</p>'
-        f'<p class="body" style="margin-top:.5rem;font-size:.78rem">{nemo_detail}</p></div>',
-        unsafe_allow_html=True,
-    )
-with l3:
-    st.markdown(
-        f'<div class="lane {"pass" if star.attribution.passed else "deny"}">'
-        f'<p class="src">CORRECTNESS SIGNAL - BEHAVIORAL RESOLVER</p>'
-        f'<p class="q">Does the merged result match the source records?</p>'
-        f'<p class="verdict">{correctness_label}'
-        f'{" - branch " + esc(star.attribution.origin_node) if star.attribution.origin_node else ""}</p>'
-        f'<p class="body">{esc(star.attribution.reason)}</p>'
-        f'<p class="body" style="margin-top:.5rem;font-size:.78rem">Resolver signal: '
-        f'<code>{esc(str(ad.get("decision", "not returned")))}</code>; it does not make the final action decision.</p></div>',
-        unsafe_allow_html=True,
-    )
-with l4:
-    st.markdown(
-        f'<div class="lane {action_lane}">'
-        f'<p class="src">BOTTOM GATE - AGT ACTION GOVERNANCE</p>'
-        f'<p class="q">Final AGT PolicyDecision for commit_disposition</p>'
-        f'<p class="verdict">{action_label}</p>'
-        f'<p class="body">{esc(str(pd_.get("reason", "")))}</p>'
-        f'<p class="body" style="margin-top:.5rem;font-size:.78rem">Rule: '
-        f'<code>{esc(str(pd_.get("matched_rule") or "default"))}</code> - outcome: {status_word}</p></div>',
-        unsafe_allow_html=True,
-    )
-
-st.markdown(
-    f'<div class="takeaway"><b>Decision path:</b> all {len(star.handoffs)} AGT handoffs were authorized. '
-    f'NeMo reported {nemo_status.lower()} for output content. The behavioral resolver independently '
-    f'{"confirmed" if star.attribution.passed else "flagged"} record-relative correctness'
-    f'{" at branch " + esc(star.attribution.origin_node) if star.attribution.origin_node else ""}. '
-    f'AGT Action Governance consumed those signals and returned <b>{action_label}</b>. '
-    f'NeMo informed the decision; AGT made it.</div>',
-    unsafe_allow_html=True,
-)
-
-# --------------------------------------------------------------------------- scene 4: branch attribution
-st.markdown('<p class="stage-tag">Inside the resolver</p>', unsafe_allow_html=True)
-st.markdown('<h2 class="stage-title">Branch-level attribution, recomputed from records</h2>', unsafe_allow_html=True)
-st.markdown('<p class="stage-help">For each node, what it reported vs. what the records say. Branch C reuses the same '
-            'record-relative check as the linear chain demo (<code>ChainGovernance</code>), applied to that branch alone.</p>',
-            unsafe_allow_html=True)
-brows = "".join(
-    f'<tr class="{"" if c.matches else "bad"}"><td><b>{c.node_id}</b> &middot; {esc(c.agent)}</td><td>{esc(c.reported)}</td>'
-    f'<td>{esc(c.recomputed)}</td><td class="{"ok" if c.matches else "no"}">{"match" if c.matches else "diverged"}</td><td>{esc(c.detail)}</td></tr>'
-    for c in star.attribution.branch_checks
-)
-masked = ", ".join(f"{DIAMOND_NODE_ID[a]} ({a})" for a in star.attribution.masked_by) or "none"
-st.markdown(
-    f'<div class="scene"><table class="facts"><thead><tr><th>Node</th><th>Reported</th><th>Records say</th><th>Check</th><th>Detail</th></tr></thead>'
-    f'<tbody>{brows}</tbody></table>'
-    f'<p style="margin:.7rem 0 0;font-size:.9rem">Origin: <b style="color:var(--red)">{esc(star.attribution.origin_node or "none")} '
-    f'({esc(star.attribution.origin_agent or "-")})</b> &middot; masked by: <b>{esc(masked)}</b> &middot; '
-    f'category: <code>{esc(star.attribution.category or "-")}</code></p></div>',
-    unsafe_allow_html=True,
-)
-
-with st.expander("Proof: correctness signal and final AGT decision"):
-    st.markdown(f"**Behavioral correctness resolver** `{ad['resolver']}` subclasses `{ad['resolver_base']}`. "
-                f"It supplies a record-relative correctness signal through the resolver hook on "
-                f"`{governor.engine_class or 'the local fallback'}`; it is not the final Action Governance decision.")
-    st.markdown("**Resolver AuthorityDecision** - deterministic correctness signal")
-    st.json(ad)
-    st.markdown("**Final AGT PolicyDecision** - returned by the separate Action Governance evaluation")
-    st.json(pd_)
-    st.markdown(f"**AuditLog** (`{POLICY_VERSION}`, hash-chained by AGT when live)")
-    st.dataframe([{k: v for k, v in row.items()} for row in star.audit], hide_index=True, width="stretch")
-
-# --------------------------------------------------------------------------- batch
-st.markdown('<p class="stage-tag">Batch</p>', unsafe_allow_html=True)
-st.markdown(f'<h2 class="stage-title">The whole session: {len(reviews)} alerts through the governance pipeline</h2>', unsafe_allow_html=True)
-all_hops_ok = [r for r in reviews if all(h.passed for h in r.handoffs)]
-auth_but_wrong = [r for r in all_hops_ok if not r.attribution.passed]
-blocked = [r for r in reviews if r.policy_decision["action"] == "deny"]
-human_review = [r for r in reviews if r.policy_decision["action"] == "require_approval"]
-unreconciled_conflicts = [r for r in reviews if r.attribution.category == "unreconciled-conflict"]
-nemo_flagged = [r for r in reviews if any(not c["passed"] for c in r.content_checks)]
-nemo_unavailable_count = sum(not r.nemo_live for r in reviews)
-total_hops = sum(len(r.handoffs) for r in reviews)
-ok_hops = sum(h.passed for r in reviews for h in r.handoffs)
-st.markdown(
-    f'<div class="score">'
-    f'<div class="metric"><strong>{len(reviews)}</strong><small>alerts reviewed</small></div>'
-    f'<div class="metric"><strong>{ok_hops} / {total_hops}</strong><small>AGT handoffs authorized</small></div>'
-    f'<div class="metric{" hot" if nemo_flagged else ""}"><strong>{len(nemo_flagged)} / {nemo_unavailable_count}</strong><small>NeMo flags / unavailable</small></div>'
-    f'<div class="metric hot"><strong>{len(auth_but_wrong)}</strong><small>correctness flags</small></div>'
-    f'<div class="metric{" hot" if unreconciled_conflicts else ""}"><strong>{len(unreconciled_conflicts)}</strong><small>unreconciled conflicts</small></div>'
-    f'<div class="metric{" hot" if blocked or human_review else ""}"><strong>{len(blocked)} / {len(human_review)}</strong><small>blocked / human review</small></div>'
-    f'</div>',
-    unsafe_allow_html=True,
-)
-show_all = st.toggle("Show every diamond", value=False)
-rows_out = [
-    {"alert": r.outcome.alert.alert_id,
-     "hops authorized": f"{sum(h.passed for h in r.handoffs)}/{len(r.handoffs)}",
-    "NeMo": "FLAG" if any(not c["passed"] for c in r.content_checks) else ("PASS" if r.nemo_live else "UNAVAILABLE"),
-    "correctness": "PASS" if r.attribution.passed else "FLAG",
-     "case type": r.attribution.category or "clean",
-     "B": r.outcome.step(SANCTIONS_AGENT).finding, "C": r.outcome.step(TRANSACTION_AGENT).finding,
-     "D": r.outcome.step(KYC_AGENT).finding, "merged": r.attribution.merged_disposition,
-     "screening state consumed by E": (
-         f"{r.outcome.step(DISPOSITION_AGENT).received_findings_by_parent.get(SANCTIONS_AGENT, 'missing')} "
-         f"v{r.outcome.step(DISPOSITION_AGENT).received_versions_by_parent.get(SANCTIONS_AGENT, 'unknown')}"
-     ),
-     "records require": r.attribution.expected_disposition,
-    "final AGT PolicyDecision": r.policy_decision["action"].upper(),
-    "matched rule": r.policy_decision.get("matched_rule") or "default",
-    "attributed to": r.attribution.origin_node or "",
-     "outcome": r.status}
-    for r in reviews if show_all or not r.attribution.passed
+# --------------------------------------------------------------------------- event stream
+st.markdown('<p class="section-label">LIVE GOVERNANCE RUN</p>', unsafe_allow_html=True)
+events: list[tuple[str, str, str, str]] = [
+    ("AML ingestion adapter", "PASS", "pass", f"Normalized {len(review.outcome.steps)} agent steps."),
 ]
-st.dataframe(rows_out, hide_index=True, width="stretch")
+for handoff in review.handoffs:
+    events.append((
+        f"AGT · {handoff.sender} → {handoff.recipient}",
+        "AUTHORIZED" if handoff.passed else "DENIED",
+        "pass" if handoff.passed else "fail",
+        handoff.reason or handoff.rule or "Handoff policy evaluated.",
+    ))
+trace_status = "PASS" if integrity.passed else "STALE / CONFLICT"
+events.append((
+    "Generic trace checks", trace_status,
+    "pass" if integrity.passed else "review", integrity.reason,
+))
+for check in review.content_checks:
+    if not check["passed"]:
+        status, css = "FLAG", "review"
+    elif check["rail"] == "unavailable":
+        status, css = "UNAVAILABLE", "review"
+    else:
+        status, css = "PASS", "pass"
+    events.append((f"NeMo · {check['agent']}", status, css, str(check["reason"])))
+events.append((
+    "AML correctness plug-in",
+    "PASS" if review.attribution.passed else "FLAG",
+    "pass" if review.attribution.passed else "review",
+    review.attribution.reason,
+))
+events.append((
+    "AGT Action Governance", action_label,
+    "pass" if action == "allow" else ("review" if action == "require_approval" else "fail"),
+    str(review.policy_decision.get("reason", "Final policy evaluated.")),
+))
+
+event_html = "".join(
+    f'<div class="event {css}"><span class="dot"></span><span class="phase">{esc(phase)}</span>'
+    f'<span class="status">{esc(status)}</span><span class="detail">{esc(detail)}</span></div>'
+    for phase, status, css, detail in events
+)
+engine_pill = (
+    '<span class="pill live">AGT LIVE</span>' if result["agt_live"]
+    else '<span class="pill fallback">AGT FALLBACK</span>'
+)
+st.markdown(
+    f'<div class="simulator">{engine_pill}{event_html}</div>',
+    unsafe_allow_html=True,
+)
+
+# --------------------------------------------------------------------------- state comparison and verdict
+st.markdown('<p class="section-label">WHERE & WHY</p>', unsafe_allow_html=True)
+if integrity.passed:
+    st.success("No governance conflict: screening and the decision agent used consistent state.")
+else:
+    st.markdown(
+        f'<div class="state-compare">'
+        f'<div class="state-card"><small>{esc(screening.agent)} emitted</small>'
+        f'<strong>{esc(screening.finding)} · version {screening.finding_version}</strong></div>'
+        f'<div class="state-card stale"><small>{esc(decision.agent)} consumed</small>'
+        f'<strong>{esc(consumed_finding)} · version {consumed_version}</strong></div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+origin = (
+    f"{review.attribution.origin_node or '-'} · {review.attribution.origin_agent}"
+    if review.attribution.origin_agent else "No failing agent attributed"
+)
+st.markdown(
+    f'<div class="verdict {verdict_css}"><div class="label">FINAL GOVERNANCE DECISION</div>'
+    f'<h2>{esc(action_label)}</h2>'
+    f'<p><b>Why:</b> {esc(review.attribution.reason)}</p>'
+    f'<p><b>Policy result:</b> {esc(str(review.policy_decision.get("reason", "")))}</p>'
+    f'<div class="why-grid">'
+    f'<div><small>Customer</small><strong>{esc(review.outcome.alert.customer.name)}</strong></div>'
+    f'<div><small>Agent disposition</small><strong>{esc(decision.disposition)}</strong></div>'
+    f'<div><small>Attributed to</small><strong>{esc(origin)}</strong></div>'
+    f'<div><small>Category</small><strong>{esc(review.attribution.category or "none")}</strong></div>'
+    f'</div></div>',
+    unsafe_allow_html=True,
+)
+
+with st.expander("Audit and proof", expanded=False):
+    st.markdown("#### Normalized PipelineTrace")
+    st.dataframe([{
+        "node": step.node_id,
+        "agent": step.agent,
+        "action": step.action_type,
+        "declared permissions": ", ".join(sorted(step.allowed_actions)),
+        "parents": ", ".join(step.received_from) or "root",
+        "finding": step.finding,
+        "emitted version": step.finding_version,
+        "received findings": json.dumps(step.received_findings_by_parent),
+        "received versions": json.dumps(step.received_versions_by_parent),
+        "disposition": step.disposition or "",
+    } for step in review.outcome.steps], hide_index=True, width="stretch")
+    st.markdown("#### Branch attribution")
+    st.dataframe([{
+        "node": check.node_id,
+        "agent": check.agent,
+        "reported": check.reported,
+        "expected": check.recomputed,
+        "matches": check.matches,
+        "detail": check.detail,
+    } for check in review.attribution.branch_checks], hide_index=True, width="stretch")
+    st.markdown("#### Resolver AuthorityDecision")
+    st.json(review.authority_decision)
+    st.markdown("#### Final AGT PolicyDecision")
+    st.json(review.policy_decision)
+    st.markdown("#### Audit evidence")
+    st.dataframe(list(review.audit), hide_index=True, width="stretch")

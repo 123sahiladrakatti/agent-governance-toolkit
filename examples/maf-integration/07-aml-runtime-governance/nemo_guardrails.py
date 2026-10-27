@@ -6,12 +6,28 @@ by Action Governance; it does not authorize actions or determine AML correctness
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypedDict
 
 
 RAIL_NAME = "self_check_output"
 _RAILS = None
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "nemo_spike" / "config"
+
+
+@dataclass(frozen=True)
+class NemoRuntimeConfig:
+    """Customer-supplied NeMo runtime configuration.
+
+    ``model`` replaces the configured main model name. ``prompts`` maps NeMo
+    task names (for example ``self_check_output``) to prompt content.
+    """
+
+    config_path: Path = DEFAULT_CONFIG_PATH
+    model: str | None = None
+    prompts: dict[str, str] = field(default_factory=dict)
+    review_instruction: str = "Review the following agent output."
 
 
 class NemoVerdict(TypedDict):
@@ -24,11 +40,22 @@ class NemoSignal(NemoVerdict):
     status: str
 
 
-def _load_rails():
+def _load_rails(settings: NemoRuntimeConfig | None = None):
     from nemoguardrails import LLMRails, RailsConfig
 
-    config_path = Path(__file__).resolve().parent / "nemo_spike" / "config"
-    return LLMRails(RailsConfig.from_path(str(config_path)))
+    settings = settings or NemoRuntimeConfig()
+    config = RailsConfig.from_path(str(settings.config_path))
+    if settings.model is not None:
+        main_model = next((model for model in config.models if getattr(model, "type", None) == "main"), None)
+        if main_model is None:
+            raise ValueError("NeMo config does not define a main model")
+        main_model.model = settings.model
+    for task, content in settings.prompts.items():
+        prompt = next((prompt for prompt in config.prompts if getattr(prompt, "task", None) == task), None)
+        if prompt is None:
+            raise ValueError(f"NeMo config does not define prompt task {task!r}")
+        prompt.content = content
+    return LLMRails(config)
 
 
 def _output_rail_decision(result: object) -> str | None:
@@ -45,8 +72,47 @@ def _output_rail_decision(result: object) -> str | None:
     return None
 
 
+def _check_with_rails(rails, agent_output: str, review_instruction: str) -> NemoVerdict:
+    result = rails.generate(
+        messages=[
+            {"role": "user", "content": review_instruction},
+            {"role": "assistant", "content": agent_output},
+        ],
+        options={
+            "rails": {"dialog": False, "output": True},
+            "log": {"activated_rails": True},
+        },
+    )
+    decision = _output_rail_decision(result)
+    if decision == "allow":
+        return {"passed": True, "rail": RAIL_NAME, "reason": "NeMo output rail allowed the content."}
+    if decision == "block":
+        return {"passed": False, "rail": RAIL_NAME, "reason": "NeMo output rail blocked the content."}
+    return {"passed": True, "rail": "unavailable", "reason": "NeMo output rail did not execute."}
+
+
+class NemoGuardrailsChecker:
+    """Callable, lazily loaded NeMo checker for one customer's settings."""
+
+    def __init__(self, settings: NemoRuntimeConfig) -> None:
+        self.settings = settings
+        self._rails = None
+
+    def __call__(self, agent_output: str) -> NemoVerdict:
+        try:
+            if self._rails is None:
+                self._rails = _load_rails(self.settings)
+            return _check_with_rails(
+                self._rails,
+                agent_output,
+                self.settings.review_instruction,
+            )
+        except Exception:
+            return {"passed": True, "rail": "unavailable", "reason": "nemo not running"}
+
+
 def nemo_check(agent_output: str) -> NemoVerdict:
-    """Run the configured NeMo output rail on an existing agent message.
+    """Run the default AML NeMo output rail on an existing agent message.
 
     NeMo is loaded lazily so demos and tests remain usable without the optional
     package or a live Ollama service. A missing runtime is explicitly marked as
@@ -57,22 +123,11 @@ def nemo_check(agent_output: str) -> NemoVerdict:
     try:
         if _RAILS is None:
             _RAILS = _load_rails()
-        result = _RAILS.generate(
-            messages=[
-                {"role": "user", "content": "Review the following agent output."},
-                {"role": "assistant", "content": agent_output},
-            ],
-            options={
-                "rails": {"dialog": False, "output": True},
-                "log": {"activated_rails": True},
-            },
+        return _check_with_rails(
+            _RAILS,
+            agent_output,
+            NemoRuntimeConfig().review_instruction,
         )
-        decision = _output_rail_decision(result)
-        if decision == "allow":
-            return {"passed": True, "rail": RAIL_NAME, "reason": "NeMo output rail allowed the content."}
-        if decision == "block":
-            return {"passed": False, "rail": RAIL_NAME, "reason": "NeMo output rail blocked the content."}
-        return {"passed": True, "rail": "unavailable", "reason": "NeMo output rail did not execute."}
     except Exception:
         return {"passed": True, "rail": "unavailable", "reason": "nemo not running"}
 

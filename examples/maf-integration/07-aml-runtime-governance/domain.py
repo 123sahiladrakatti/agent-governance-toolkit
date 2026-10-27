@@ -7,7 +7,7 @@ chain used to demonstrate transitive corruption with origin attribution.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Literal
 
 CTR_THRESHOLD = 10_000.0
@@ -87,28 +87,10 @@ class StructuringResult:
 
 
 def recompute_structuring(alert: Alert, threshold: float = CTR_THRESHOLD) -> StructuringResult:
-    """Derive structuring evidence only from the alert's transaction records."""
-    cash_deposits = [
-        transaction for transaction in alert.transactions
-        if transaction.type == "cash_deposit" and transaction.amount < threshold
-    ]
-    cash_deposits.sort(key=lambda transaction: transaction.timestamp)
-    within_window = bool(cash_deposits) and (
-        cash_deposits[-1].timestamp - cash_deposits[0].timestamp
-        <= timedelta(days=STRUCTURING_WINDOW_DAYS)
-    )
-    amounts = tuple(transaction.amount for transaction in cash_deposits)
-    transaction_ids = tuple(transaction.id for transaction in cash_deposits)
-    aggregate = sum(amounts)
-    return StructuringResult(
-        qualifying_amounts=amounts,
-        qualifying_transaction_ids=transaction_ids,
-        aggregate=aggregate,
-        threshold=threshold,
-        qualifying_count=len(amounts),
-        within_window=within_window,
-        is_structuring=(len(amounts) >= STRUCTURING_MIN_DEPOSITS and aggregate >= STRUCTURING_AGGREGATE and within_window),
-    )
+    """Compatibility wrapper for the AML reference calculation."""
+    from aml.calculations import recompute_structuring as calculate
+
+    return calculate(alert, threshold)
 
 
 @dataclass(frozen=True)
@@ -263,7 +245,7 @@ class GraphStep:
     flagged: bool                        # does this node's finding raise a concern?
     used_amounts: tuple[float, ...] = ()
     used_aggregate: float = 0.0
-    disposition: Disposition | None = None    # only the merge node disposes
+    disposition: str | None = None            # optional domain outcome at this node
     acted_account_id: str | None = None
     received_amounts_by_parent: dict[str, tuple[float, ...]] = field(default_factory=dict)
     received_findings_by_parent: dict[str, str] = field(default_factory=dict)
@@ -275,11 +257,12 @@ class GraphStep:
 class GraphOutcome:
     """Result of running one alert through the diamond graph."""
 
-    alert: Alert
+    alert: object                              # opaque customer records
     steps: tuple[GraphStep, ...]
     is_star_case: bool = False
     fault: str | None = None
     is_conflict_case: bool = False
+    resource_id: str | None = None
 
     def step(self, agent: str) -> GraphStep:
         return next(s for s in self.steps if s.agent == agent)
@@ -299,31 +282,31 @@ class BranchFinding:
 
 
 def recompute_sanctions(alert: Alert) -> BranchFinding:
-    hit = alert.customer.name in SANCTIONS_WATCHLIST
-    return BranchFinding("hit" if hit else "no-hit", hit,
-                         f"'{alert.customer.name}' {'is' if hit else 'is not'} on the sanctions watchlist")
+    """Compatibility wrapper for the AML reference calculation."""
+    from aml.calculations import recompute_sanctions as calculate
+
+    return calculate(alert)
 
 
 def recompute_kyc(alert: Alert) -> BranchFinding:
-    c = alert.customer
-    complete = bool(c.name and c.stated_occupation and c.expected_monthly_cash_volume > 0)
-    return BranchFinding("verified" if complete else "incomplete", not complete,
-                         f"profile on file: {c.stated_occupation}, expected ${c.expected_monthly_cash_volume:,.0f}/mo cash")
+    """Compatibility wrapper for the AML reference calculation."""
+    from aml.calculations import recompute_kyc as calculate
+
+    return calculate(alert)
 
 
 def recompute_transactions(alert: Alert) -> BranchFinding:
-    truth = recompute_structuring(alert)
-    return BranchFinding("structuring" if truth.is_structuring else "not-structuring", truth.is_structuring,
-                         f"{truth.qualifying_count} sub-threshold cash deposits totalling ${truth.aggregate:,.0f}")
+    """Compatibility wrapper for the AML reference calculation."""
+    from aml.calculations import recompute_transactions as calculate
+
+    return calculate(alert)
 
 
 def merge_disposition(sanctions_flagged: bool, transactions_flagged: bool, kyc_flagged: bool) -> Disposition:
-    """The fan-in merge rule the disposition agent applies to its branch inputs."""
-    if sanctions_flagged or transactions_flagged:
-        return "FILE_SAR"
-    if kyc_flagged:
-        return "ESCALATE"
-    return "CLEAR"
+    """Compatibility wrapper for the AML reference merge rule."""
+    from aml.calculations import merge_disposition as merge
+
+    return merge(sanctions_flagged, transactions_flagged, kyc_flagged)
 
 
 @dataclass(frozen=True)

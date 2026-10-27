@@ -28,33 +28,26 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
-from agent_sim import (
-    DIAMOND_BRANCHES,
-    DIAMOND_NODE_ID,
-    DIAMOND_PARENTS,
-    DISPOSITION_AGENT,
-    KYC_AGENT,
-    SANCTIONS_AGENT,
-    TRANSACTION_AGENT,
-)
+from aml.correctness import AmlCorrectnessComponent
+from aml.system import AML_SYSTEM_DESCRIPTION
+from correctness import CorrectnessComponent
 from domain import (
     Alert,
     BranchCheck,
-    ChainStep,
-    CustomerProfile,
     GraphAttribution,
     GraphOutcome,
     GraphStep,
-    Transaction,
-    merge_disposition,
-    recompute_kyc,
-    recompute_sanctions,
-    recompute_transactions,
 )
-from governance import ChainGovernance, ToolkitGovernanceAdapter
+from governance import ToolkitGovernanceAdapter
+from graph_integrity import check_graph_integrity
 from nemo_guardrails import NemoVerdict, nemo_check, summarize_nemo_checks
+from system_description import (
+    SystemDescription,
+    decode_graph_context,
+    encode_graph_context,
+)
 
 
 def _import_agt():
@@ -94,7 +87,7 @@ else:
     _ResolverBase = object
 
 
-GRAPH_SCHEMA = "aml-diamond/v1"
+GRAPH_SCHEMA = AML_SYSTEM_DESCRIPTION.schema
 POLICY_VERSION = "aml-graph-governance@1.0"
 
 GRAPH_POLICY = json.dumps({
@@ -146,218 +139,177 @@ ACTION_GOVERNANCE_POLICY = json.dumps({
 # ---------------------------------------------------------------------------
 # JSON-safe context (AGT's AuditLog hashes the context with json.dumps)
 # ---------------------------------------------------------------------------
-def graph_context(outcome: GraphOutcome) -> dict[str, Any]:
-    alert = outcome.alert
-    return {
-        "schema": GRAPH_SCHEMA,
-        "alert": {
-            "alert_id": alert.alert_id, "account_id": alert.account_id, "monitoring_rule": alert.monitoring_rule,
-            "customer": {"account_id": alert.customer.account_id, "name": alert.customer.name,
-                         "stated_occupation": alert.customer.stated_occupation,
-                         "expected_monthly_cash_volume": alert.customer.expected_monthly_cash_volume},
-            "transactions": [{"id": t.id, "account_id": t.account_id, "amount": t.amount, "type": t.type,
-                              "timestamp": t.timestamp.isoformat(), "branch": t.branch} for t in alert.transactions],
-        },
-        "steps": [{
-            "agent": s.agent, "node_id": s.node_id, "action_type": s.action_type,
-            "allowed_actions": sorted(s.allowed_actions), "received_from": list(s.received_from),
-            "finding": s.finding, "flagged": s.flagged, "used_amounts": list(s.used_amounts),
-            "used_aggregate": s.used_aggregate, "disposition": s.disposition, "acted_account_id": s.acted_account_id,
-            "received_amounts_by_parent": {k: list(v) for k, v in s.received_amounts_by_parent.items()},
-            "received_findings_by_parent": dict(s.received_findings_by_parent),
-            "finding_version": s.finding_version,
-            "received_versions_by_parent": dict(s.received_versions_by_parent),
-        } for s in outcome.steps],
-    }
+def graph_context(
+    outcome: GraphOutcome,
+    system_description: SystemDescription = AML_SYSTEM_DESCRIPTION,
+) -> dict[str, Any]:
+    """Encode a normalized outcome for AGT context/audit transport."""
+
+    return encode_graph_context(outcome, system_description)
 
 
-def _decode(ctx: dict[str, Any]) -> tuple[Alert, tuple[GraphStep, ...]]:
-    a = ctx["alert"]
-    c = a["customer"]
-    alert = Alert(
-        a["alert_id"], a["account_id"],
-        tuple(Transaction(t["id"], t["account_id"], float(t["amount"]), t["type"],
-                          datetime.fromisoformat(t["timestamp"]), t["branch"]) for t in a["transactions"]),
-        CustomerProfile(c["account_id"], c["name"], c["stated_occupation"], float(c["expected_monthly_cash_volume"])),
-        a["monitoring_rule"],
-    )
-    steps = tuple(GraphStep(
-        agent=s["agent"], node_id=s["node_id"], action_type=s["action_type"],
-        allowed_actions=frozenset(s["allowed_actions"]), received_from=tuple(s["received_from"]),
-        finding=s["finding"], flagged=bool(s["flagged"]), used_amounts=tuple(s["used_amounts"]),
-        used_aggregate=float(s["used_aggregate"]), disposition=s["disposition"], acted_account_id=s["acted_account_id"],
-        received_amounts_by_parent={k: tuple(v) for k, v in s["received_amounts_by_parent"].items()},
-        received_findings_by_parent=dict(s["received_findings_by_parent"]),
-        finding_version=int(s.get("finding_version", 1)),
-        received_versions_by_parent={k: int(v) for k, v in s.get("received_versions_by_parent", {}).items()},
-    ) for s in ctx["steps"])
-    return alert, steps
+def _decode(
+    ctx: dict[str, Any],
+    system_description: SystemDescription = AML_SYSTEM_DESCRIPTION,
+) -> tuple[object, tuple[GraphStep, ...]]:
+    outcome = decode_graph_context(ctx, system_description)
+    return outcome.alert, outcome.steps
 
 
 # ---------------------------------------------------------------------------
-# Branch-level attribution (pure; shared by the AGT path and the fallback)
+# Generic graph integrity + optional customer correctness
 # ---------------------------------------------------------------------------
-def _money(v: float) -> str:
-    return f"${v:,.0f}"
+_DEFAULT_CORRECTNESS = object()
 
 
-def _check_transactions(alert: Alert, step: GraphStep) -> BranchCheck:
-    """Reuse ChainGovernance's record-relative check by projecting branch C as a
-    one-hop chain that reads the records itself (received_from=None)."""
-    projected = ChainStep(
-        agent=step.agent, step_index=1, used_amounts=step.used_amounts, used_aggregate=step.used_aggregate,
-        disposition=step.disposition or "CLEAR", action_type=step.action_type, allowed_actions=step.allowed_actions,
-        received_from=None, received_amounts=None, acted_account_id=step.acted_account_id,
+def evaluate_graph(
+    outcome: GraphOutcome,
+    correctness_component: CorrectnessComponent | None,
+    system_description: SystemDescription = AML_SYSTEM_DESCRIPTION,
+) -> GraphAttribution:
+    """Combine always-on graph integrity with optional domain correctness."""
+
+    integrity = check_graph_integrity(outcome)
+    by_agent = {step.agent: step for step in outcome.steps}
+    merge = by_agent[system_description.final_agent]
+    correctness = (
+        correctness_component.check(outcome, outcome.alert)
+        if correctness_component is not None else None
     )
-    gov = ChainGovernance().check(alert, (projected,))
-    truth = recompute_transactions(alert)
-    if gov.passed:
-        return BranchCheck(step.agent, step.node_id, step.finding, truth.finding, True, truth.detail)
-    if gov.category != "transitive-corruption":
-        return BranchCheck(step.agent, step.node_id, step.finding, truth.finding, False, gov.reason)
-    misread = next(((r, u) for r, u in zip(gov.record_amounts, step.used_amounts) if r != u), None)
-    detail = (f"misread {_money(misread[0])} as {_money(misread[1])}" if misread else "used amounts differ from records")
-    detail += (f"; used {_money(step.used_aggregate)} total vs {_money(gov.record_aggregate)} in the records "
-               f"(records say {truth.finding})")
-    return BranchCheck(step.agent, step.node_id, step.finding, truth.finding, False, detail)
 
+    actual = str(
+        correctness.actual
+        if correctness is not None and correctness.actual is not None
+        else merge.disposition or merge.finding
+    )
+    expected = str(
+        correctness.expected
+        if correctness is not None and correctness.expected is not None
+        else actual
+    )
 
-def _check_simple(alert: Alert, step: GraphStep, recompute) -> BranchCheck:
-    truth = recompute(alert)
-    if step.acted_account_id != alert.account_id:
-        return BranchCheck(step.agent, step.node_id, step.finding, truth.finding, False,
-                           f"acted on {step.acted_account_id}; alert belongs to {alert.account_id}")
-    ok = step.finding == truth.finding and step.flagged == truth.flagged
-    return BranchCheck(step.agent, step.node_id, step.finding, truth.finding, ok, truth.detail)
+    if not integrity.passed:
+        domain_checks = tuple(
+            check for check in (correctness.checks if correctness is not None else ())
+            if getattr(check, "agent", None) != merge.agent
+        )
+        merge_check = BranchCheck(
+            merge.agent,
+            merge.node_id,
+            actual,
+            expected,
+            False,
+            integrity.reason,
+        )
+        return GraphAttribution(
+            False,
+            integrity.category,
+            integrity.origin_agent,
+            integrity.origin_node,
+            integrity.related_agents,
+            integrity.reason,
+            (*domain_checks, merge_check),
+            actual,
+            expected,
+        )
 
+    if correctness is None:
+        merge_check = BranchCheck(
+            merge.agent,
+            merge.node_id,
+            actual,
+            expected,
+            True,
+            "Domain correctness was not configured; generic graph integrity passed.",
+        )
+        return GraphAttribution(
+            True,
+            None,
+            None,
+            None,
+            (),
+            "Generic graph integrity passed; domain correctness was not configured.",
+            (merge_check,),
+            actual,
+            expected,
+        )
 
-_BRANCH_CHECKERS = {
-    SANCTIONS_AGENT: lambda alert, s: _check_simple(alert, s, recompute_sanctions),
-    TRANSACTION_AGENT: _check_transactions,
-    KYC_AGENT: lambda alert, s: _check_simple(alert, s, recompute_kyc),
-}
-_RECOMPUTE = {SANCTIONS_AGENT: recompute_sanctions, TRANSACTION_AGENT: recompute_transactions, KYC_AGENT: recompute_kyc}
+    return GraphAttribution(
+        correctness.passed,
+        correctness.category,
+        correctness.origin_agent,
+        correctness.origin_node,
+        correctness.related_agents,
+        correctness.reason,
+        tuple(correctness.checks),
+        actual,
+        expected,
+    )
 
 
 def attribute_graph(alert: Alert, steps: tuple[GraphStep, ...]) -> GraphAttribution:
-    """Recompute every branch from the records, then judge the merged disposition."""
-    by_agent = {s.agent: s for s in steps}
-    merge = by_agent[DISPOSITION_AGENT]
-    checks = [_BRANCH_CHECKERS[agent](alert, by_agent[agent]) for agent in DIAMOND_BRANCHES]
-    truth = {agent: _RECOMPUTE[agent](alert) for agent in DIAMOND_BRANCHES}
-    expected = merge_disposition(*(truth[a].flagged for a in DIAMOND_BRANCHES))
-    merged = merge.disposition or "CLEAR"
+    """Compatibility entry point for the AML reference implementation."""
 
-    # Fan-in provenance: did E receive exactly what each parent reported?
-    stale_flagged_branches = [
-        agent for agent in DIAMOND_BRANCHES
-        if truth[agent].flagged and (
-            merge.received_findings_by_parent.get(agent) != by_agent[agent].finding
-            or merge.received_versions_by_parent.get(agent, by_agent[agent].finding_version)
-            < by_agent[agent].finding_version
-        )
-    ]
-    received_flags = {
-        SANCTIONS_AGENT: merge.received_findings_by_parent.get(SANCTIONS_AGENT) == "hit",
-        TRANSACTION_AGENT: merge.received_findings_by_parent.get(TRANSACTION_AGENT) == "structuring",
-        KYC_AGENT: merge.received_findings_by_parent.get(KYC_AGENT) == "incomplete",
-    }
-    from_inputs = merge_disposition(*(received_flags[agent] for agent in DIAMOND_BRANCHES))
-    tampered = [p for p in merge.received_from
-                if merge.received_findings_by_parent.get(p) != by_agent[p].finding]
-    stale = [p for p in merge.received_from
-             if merge.received_versions_by_parent.get(p, by_agent[p].finding_version)
-             < by_agent[p].finding_version]
-    merge_ok = not tampered and not stale and merged == from_inputs
-    if stale_flagged_branches and merged == "CLEAR":
-        screening = ", ".join(f"{DIAMOND_NODE_ID[agent]} ({agent})" for agent in stale_flagged_branches)
-        received_versions = ", ".join(
-            f"{DIAMOND_NODE_ID[agent]} v{merge.received_versions_by_parent.get(agent, 1)}"
-            for agent in stale_flagged_branches
-        )
-        checks.append(BranchCheck(
-            merge.agent, merge.node_id, merged, expected, False,
-            f"unreconciled conflict: {screening} reported a probable watchlist match, but disposition "
-            f"used stale case state ({received_versions}) and consumed "
-            f"'{merge.received_findings_by_parent.get(stale_flagged_branches[0], 'missing')}' instead "
-            f"of '{by_agent[stale_flagged_branches[0]].finding}'; no reconciliation occurred",
-        ))
-        return GraphAttribution(
-            False, "unreconciled-conflict", merge.agent, merge.node_id,
-            tuple(stale_flagged_branches),
-            f"{screening} flagged a probable watchlist match in case-state "
-            f"v{by_agent[stale_flagged_branches[0]].finding_version}, but {merge.agent} used stale case state "
-            f"{received_versions} and cleared the customer without reconciling the conflicting findings. "
-            "The clear disposition must not be committed automatically.",
-            tuple(checks), merged, expected,
-        )
-    checks.append(BranchCheck(
-        merge.agent, merge.node_id, merged, expected, merge_ok and merged == expected,
-        ("merged its three inputs faithfully" if merge_ok else
-         f"merge diverged from its inputs (consumed inputs imply {from_inputs}; "
-         f"stale: {', '.join(stale) or 'none'}; altered: {', '.join(tampered) or 'none'})"),
-    ))
-    checks_t = tuple(checks)
-    diverged = [c for c in checks_t[:-1] if not c.matches]
-
-    if merged == expected:
-        note = (f" Branch divergence did not change the outcome: {', '.join(c.agent for c in diverged)}."
-                if diverged else "")
-        return GraphAttribution(True, None, None, None, (), f"Merged {merged} matches the records.{note}",
-                                checks_t, merged, expected)
-
-    if not merge_ok:
-        origin = merge
-        reason = (f"{merge.agent} (node {merge.node_id}) produced {merged}, but its branch inputs imply "
-                  f"{from_inputs}; records require {expected}.")
-        masked: tuple[str, ...] = ()
-        category = "merge-error"
-    else:
-        bad = diverged[0] if diverged else checks_t[0]
-        origin = by_agent[bad.agent]
-        masked = tuple(c.agent for c in checks_t[:-1] if c.matches and not by_agent[c.agent].flagged)
-        sib = ", ".join(f"{by_agent[a].node_id} ({a})" for a in masked)
-        reason = (f"branch {origin.node_id} ({origin.agent}) {bad.detail}; merged {merged} is wrong "
-                  f"(records require {expected})" + (f". Masked by clean siblings {sib}." if sib else "."))
-        category = "masked-branch-error"
-    return GraphAttribution(False, category, origin.agent, origin.node_id, masked, reason, checks_t, merged, expected)
+    return evaluate_graph(
+        GraphOutcome(alert=alert, steps=steps),
+        AmlCorrectnessComponent(),
+        AML_SYSTEM_DESCRIPTION,
+    )
 
 
 # ---------------------------------------------------------------------------
 # The resolver
 # ---------------------------------------------------------------------------
 class BehavioralAuthorityResolver(_ResolverBase):
-    """AGT AuthorityResolver whose verdict is record-relative behavioral governance."""
+    """AGT hook combining graph integrity and optional domain correctness."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        correctness_component: CorrectnessComponent | None | object = _DEFAULT_CORRECTNESS,
+        system_description: SystemDescription = AML_SYSTEM_DESCRIPTION,
+    ) -> None:
+        if correctness_component is _DEFAULT_CORRECTNESS:
+            self.correctness_component = (
+                AmlCorrectnessComponent()
+                if system_description.schema == AML_SYSTEM_DESCRIPTION.schema
+                else None
+            )
+        else:
+            self.correctness_component = correctness_component
+        self.system_description = system_description
         self.last_attribution: GraphAttribution | None = None
         self.last_decision: AuthorityDecision | None = None
         self.calls = 0
 
     def resolve(self, request) -> AuthorityDecision:
         self.calls += 1
-        ctx = (getattr(request, "context", None) or {}).get("aml_graph")
-        if not isinstance(ctx, dict) or ctx.get("schema") != GRAPH_SCHEMA:
+        request_context = getattr(request, "context", None) or {}
+        ctx = request_context.get("governance_graph") or request_context.get("aml_graph")
+        if not isinstance(ctx, dict) or ctx.get("schema") != self.system_description.schema:
             self.last_attribution = None
             self.last_decision = AuthorityDecision(decision="deny", trust_tier="record-relative",
-                                                   narrowing_reason="no diamond graph/records in context (fail closed)")
+                                                   narrowing_reason="no valid graph/records in context (fail closed)")
             return self.last_decision
-        alert, steps = _decode(ctx)
-        verdict = attribute_graph(alert, steps)
+        outcome = decode_graph_context(ctx, self.system_description)
+        verdict = evaluate_graph(outcome, self.correctness_component, self.system_description)
         self.last_attribution = verdict
         self.last_decision = AuthorityDecision(
             decision="allow" if verdict.passed else "deny",
             effective_scope=list(getattr(getattr(request, "delegation", None), "delegated_capabilities", []) or []),
             narrowing_reason=verdict.reason,
-            trust_tier="record-relative",
+            trust_tier="record-relative" if self.correctness_component is not None else "graph-integrity",
             matched_invariants=[f"{c.node_id}:{c.agent}:{'ok' if c.matches else 'diverged'}" for c in verdict.branch_checks],
         )
         return self.last_decision
 
 
-def register(engine) -> BehavioralAuthorityResolver:
+def register(
+    engine,
+    correctness_component: CorrectnessComponent | None | object = _DEFAULT_CORRECTNESS,
+    system_description: SystemDescription = AML_SYSTEM_DESCRIPTION,
+) -> BehavioralAuthorityResolver:
     """Install our resolver into an AGT PolicyEngine."""
-    resolver = BehavioralAuthorityResolver()
+    resolver = BehavioralAuthorityResolver(correctness_component, system_description)
     engine.set_authority_resolver(resolver)
     return resolver
 
@@ -392,18 +344,38 @@ class GraphReview:
 class GraphGovernor:
     """One AGT PolicyEngine (static handoff rules + our resolver) with an audit log."""
 
-    def __init__(self, content_checker: Callable[[str], NemoVerdict] = nemo_check) -> None:
-        self.toolkit = ToolkitGovernanceAdapter(GRAPH_POLICY)
-        self.action_toolkit = ToolkitGovernanceAdapter(ACTION_GOVERNANCE_POLICY)
+    def __init__(
+        self,
+        content_checker: Callable[[str], NemoVerdict] = nemo_check,
+        correctness_component: CorrectnessComponent | None | object = _DEFAULT_CORRECTNESS,
+        graph_policy: str = GRAPH_POLICY,
+        action_policy: str = ACTION_GOVERNANCE_POLICY,
+        system_description: SystemDescription = AML_SYSTEM_DESCRIPTION,
+    ) -> None:
+        self.system_description = system_description
+        self.toolkit = ToolkitGovernanceAdapter(graph_policy)
+        self.action_toolkit = ToolkitGovernanceAdapter(action_policy)
+        graph_policy_data = json.loads(graph_policy)
+        self.policy_version = (
+            f"{graph_policy_data.get('name', 'graph-governance')}@"
+            f"{graph_policy_data.get('version', 'unknown')}"
+        )
         self.engine_class = type(self.toolkit.engine).__module__ + "." + type(self.toolkit.engine).__name__ if self.toolkit.engine is not None else None
         self.resolver_engine_live = AGT_AVAILABLE and self.toolkit.engine is not None
         self.action_engine_live = AGT_AVAILABLE and self.action_toolkit.engine is not None
         self.agt_live = self.resolver_engine_live and self.action_engine_live
         self.content_checker = content_checker
         if self.resolver_engine_live:
-            self.resolver = register(self.toolkit.engine)
+            self.resolver = register(
+                self.toolkit.engine,
+                correctness_component,
+                system_description,
+            )
         else:
-            self.resolver = BehavioralAuthorityResolver()
+            self.resolver = BehavioralAuthorityResolver(
+                correctness_component,
+                system_description,
+            )
 
     def _audit(self, agent: str, action: str, resource: str, context: dict, decision) -> dict[str, Any]:
         row = {"agent": agent, "action": action, "resource": resource, "decision": decision.action,
@@ -412,15 +384,17 @@ class GraphGovernor:
             entry = self.toolkit.audit.log(
                 event_type="policy_evaluation", agent_did=agent, action=action, resource=resource, data=context,
                 outcome="success" if decision.allowed else "denied",
-                policy_decision=decision.action, policy_version=POLICY_VERSION,
+                policy_decision=decision.action, policy_version=self.policy_version,
             )
             row["entry_hash"] = getattr(entry, "entry_hash", None)
         return row
 
     def review(self, outcome: GraphOutcome) -> GraphReview:
-        alert = outcome.alert
-        resource = f"aml-alert:{alert.alert_id}"
+        record_id = getattr(outcome.alert, "alert_id", "unknown")
+        resource = outcome.resource_id or f"{self.system_description.resource_prefix}:{record_id}"
         by_agent = {s.agent: s for s in outcome.steps}
+        final_agent = self.system_description.final_agent
+        final_step = by_agent[final_agent]
         audit: list[dict[str, Any]] = []
 
         # Run each node's deterministic incoming-edge gates before checking its output.
@@ -429,22 +403,33 @@ class GraphGovernor:
         for step in outcome.steps:
             for sender in step.received_from:
                 recipient = step.agent
-                ok = sender in DIAMOND_PARENTS.get(recipient, ()) and step.action_type in step.allowed_actions
+                declared = self.system_description.agent(recipient)
+                ok = (
+                    sender in self.system_description.parents_for(recipient)
+                    and step.action_type in declared.allowed_actions
+                )
                 ctx = {"handoff": {"sender": sender, "recipient": recipient,
                                    "status": "authorized" if ok else "unauthorized"},
-                       "action": {"type": "aml_graph_handoff", "authorized": ok}}
+                       "action": {"type": self.system_description.handoff_action, "authorized": ok}}
                 if self.resolver_engine_live:
                     d = self.toolkit.engine.evaluate(recipient, ctx, stage="pre_tool")
                 else:
+                    fallback_rule = self.toolkit.rule_names.get(
+                        "handoff.status == 'authorized'" if ok else "handoff.status != 'authorized'",
+                        "allow-authorized-handoff" if ok else "deny-unauthorized-handoff",
+                    )
                     d = SimpleNamespace(allowed=ok, action="allow" if ok else "deny",
-                                        matched_rule="allow-authorized-handoff" if ok else "deny-unauthorized-handoff",
+                                        matched_rule=fallback_rule,
                                         reason="fallback: static handoff rule")
-                audit.append(self._audit(recipient, "aml_graph_handoff", resource, ctx, d))
+                audit.append(self._audit(recipient, self.system_description.handoff_action, resource, ctx, d))
                 handoffs.append(HandoffCheck(sender, recipient, bool(d.allowed), d.action,
                                              getattr(d, "matched_rule", None), d.reason or ""))
 
             incoming = [check for check in handoffs if check.recipient == step.agent]
-            authorized = step.action_type in step.allowed_actions and all(check.passed for check in incoming)
+            authorized = (
+                step.action_type in self.system_description.agent(step.agent).allowed_actions
+                and all(check.passed for check in incoming)
+            )
             if authorized:
                 output = (
                     f"Agent: {step.agent} finding: {step.finding}; disposition: {step.disposition or 'not set'}; "
@@ -464,15 +449,27 @@ class GraphGovernor:
         self.resolver.last_attribution = None
         self.resolver.last_decision = None
         calls_before = self.resolver.calls
-        merge = by_agent[DISPOSITION_AGENT]
-        resolver_context = {"action": {"type": "resolve_behavioral_correctness"}, "tool_name": "commit_disposition",
-                            "resource": resource, "capabilities": sorted(merge.allowed_actions),
-                            "nemo": nemo_signal, "aml_graph": graph_context(outcome)}
+        encoded_graph = graph_context(outcome, self.system_description)
+        final_capabilities = sorted(self.system_description.agent(final_agent).allowed_actions)
+        resolver_context = {
+            "action": {"type": self.system_description.resolver_action},
+            "tool_name": self.system_description.final_action,
+            "resource": resource,
+            "capabilities": final_capabilities,
+            "nemo": nemo_signal,
+            "governance_graph": encoded_graph,
+            # Compatibility key for the shipped AML fail-closed policy.
+            "aml_graph": encoded_graph,
+        }
         if self.resolver_engine_live:
-            resolver_decision = self.toolkit.engine.evaluate(DISPOSITION_AGENT, resolver_context, stage="post_tool")
+            resolver_decision = self.toolkit.engine.evaluate(final_agent, resolver_context, stage="post_tool")
             attribution = self.resolver.last_attribution
             if attribution is None:   # static fail-closed rule fired before the resolver
-                attribution = attribute_graph(alert, outcome.steps)
+                attribution = evaluate_graph(
+                    outcome,
+                    self.resolver.correctness_component,
+                    self.system_description,
+                )
         else:
             auth = self.resolver.resolve(SimpleNamespace(context=resolver_context, delegation=None))
             denied = auth.decision == "deny"
@@ -486,14 +483,15 @@ class GraphGovernor:
             )
             attribution = self.resolver.last_attribution
 
-        audit.append(self._audit(DISPOSITION_AGENT, "resolve_behavioral_correctness", resource,
+        audit.append(self._audit(final_agent, self.system_description.resolver_action, resource,
                                  resolver_context, resolver_decision))
         action_authorized = all(handoff.passed for handoff in handoffs) and all(
-            step.action_type in step.allowed_actions for step in outcome.steps
+            step.action_type in self.system_description.agent(step.agent).allowed_actions
+            for step in outcome.steps
         )
         action_context = {
             "action": {
-                "type": "commit_disposition",
+                "type": self.system_description.final_action,
                 "authorized": action_authorized,
                 "status": "authorized" if action_authorized else "unauthorized",
             },
@@ -507,16 +505,16 @@ class GraphGovernor:
             },
             "nemo": nemo_signal,
             "resource": resource,
-            "capabilities": sorted(merge.allowed_actions),
+            "capabilities": final_capabilities,
         }
         d = self.action_toolkit.evaluate(
-            agent=DISPOSITION_AGENT,
-            action="commit_disposition",
+            agent=final_agent,
+            action=self.system_description.final_action,
             context=action_context,
             stage="post_tool",
             resource=resource,
         )
-        audit.append({"agent": DISPOSITION_AGENT, "action": "action_governance_decision",
+        audit.append({"agent": final_agent, "action": "action_governance_decision",
                       "resource": resource, "decision": d.action, "reason": d.reason,
                       "entry_hash": None})
 
@@ -533,7 +531,10 @@ class GraphGovernor:
                               "trust_tier": getattr(ad, "trust_tier", None),
                               "matched_invariants": list(getattr(ad, "matched_invariants", []) or []),
                               "type": f"{type(ad).__module__}.{type(ad).__name__}" if ad is not None else None}
-        if d.action == "require_approval" or merge.disposition == "ESCALATE":
+        if (
+            d.action == "require_approval"
+            or final_step.disposition in self.system_description.escalation_outcomes
+        ):
             status = "escalated"
         elif not d.allowed:
             status = "halted"

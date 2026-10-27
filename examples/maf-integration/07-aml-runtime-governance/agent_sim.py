@@ -185,6 +185,19 @@ def run_chain_session(count: int = 40, seed: int = 7) -> list[ChainOutcome]:
 # ---------------------------------------------------------------------------
 from dataclasses import replace as _replace
 
+from aml.system import (
+    AML_SYSTEM_DESCRIPTION,
+    DIAMOND_ACTION,
+    DIAMOND_ALLOWED,
+    DIAMOND_BRANCHES,
+    DIAMOND_NODE_ID,
+    DIAMOND_PARENTS,
+    DISPOSITION_AGENT,
+    KYC_AGENT,
+    SANCTIONS_AGENT,
+    TRANSACTION_AGENT,
+    TRIAGE_AGENT,
+)
 from domain import (
     GraphOutcome,
     GraphStep,
@@ -192,37 +205,7 @@ from domain import (
     recompute_kyc,
     recompute_sanctions,
 )
-
-TRIAGE_AGENT = "intake"
-SANCTIONS_AGENT = "customer-screening"
-TRANSACTION_AGENT = "transaction-analysis"
-KYC_AGENT = "kyc-entity"
-DISPOSITION_AGENT = "decision"
-
-DIAMOND_NODE_ID = {TRIAGE_AGENT: "A", SANCTIONS_AGENT: "B", TRANSACTION_AGENT: "C", KYC_AGENT: "D", DISPOSITION_AGENT: "E"}
-DIAMOND_BRANCHES = (SANCTIONS_AGENT, TRANSACTION_AGENT, KYC_AGENT)
-# Declared topology: who each agent is permitted to receive from.
-DIAMOND_PARENTS = {
-    TRIAGE_AGENT: (),
-    SANCTIONS_AGENT: (TRIAGE_AGENT,),
-    TRANSACTION_AGENT: (TRIAGE_AGENT,),
-    KYC_AGENT: (TRIAGE_AGENT,),
-    DISPOSITION_AGENT: DIAMOND_BRANCHES,
-}
-DIAMOND_ALLOWED = {
-    TRIAGE_AGENT: frozenset({"fan_out_alert"}),
-    SANCTIONS_AGENT: frozenset({"screen_sanctions"}),
-    TRANSACTION_AGENT: frozenset({"analyze_transactions", "review_records"}),
-    KYC_AGENT: frozenset({"verify_kyc"}),
-    DISPOSITION_AGENT: frozenset({"merge_disposition"}),
-}
-DIAMOND_ACTION = {
-    TRIAGE_AGENT: "fan_out_alert",
-    SANCTIONS_AGENT: "screen_sanctions",
-    TRANSACTION_AGENT: "analyze_transactions",
-    KYC_AGENT: "verify_kyc",
-    DISPOSITION_AGENT: "merge_disposition",
-}
+from system_description import PipelineRunTrace, TraceStep, adapt_trace
 MISREAD_BRANCH = "misread-branch"
 STALE_SCREENING_VIEW = "stale-screening-view"
 
@@ -234,11 +217,14 @@ def _misread(amounts: tuple[float, ...]) -> tuple[float, ...]:
     return tuple(2_900.0 if a == amounts[0] else a * 0.5 for a in amounts)
 
 
-def _graph_step(agent: str, finding: str, flagged: bool, alert: Alert, **extra) -> GraphStep:
-    return GraphStep(
-        agent=agent, node_id=DIAMOND_NODE_ID[agent], action_type=DIAMOND_ACTION[agent],
-        allowed_actions=DIAMOND_ALLOWED[agent], received_from=DIAMOND_PARENTS[agent],
-        finding=finding, flagged=flagged, acted_account_id=alert.account_id, **extra,
+def _graph_step(agent: str, finding: str, flagged: bool, alert: Alert, **extra) -> TraceStep:
+    return TraceStep(
+        agent=agent,
+        action_type=DIAMOND_ACTION[agent],
+        finding=finding,
+        flagged=flagged,
+        acted_account_id=alert.account_id,
+        **extra,
     )
 
 
@@ -296,7 +282,14 @@ def build_diamond(
         finding_version=3,
         received_versions_by_parent=consumed_versions,
     )
-    return (a, b, c, d, e)
+    return adapt_trace(
+        AML_SYSTEM_DESCRIPTION,
+        PipelineRunTrace(
+            records=alert,
+            steps=(a, b, c, d, e),
+            resource_id=f"aml-alert:{alert.alert_id}",
+        ),
+    ).steps
 
 
 def run_diamond_session(count: int = 40, seed: int = 7) -> list[GraphOutcome]:
@@ -331,5 +324,6 @@ def run_diamond_session(count: int = 40, seed: int = 7) -> list[GraphOutcome]:
             is_star_case=is_star,
             fault=fault,
             is_conflict_case=is_conflict,
+            resource_id=f"aml-alert:{alert.alert_id}",
         ))
     return outcomes

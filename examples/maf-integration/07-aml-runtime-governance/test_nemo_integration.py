@@ -1,6 +1,8 @@
 """Unit tests for the optional NeMo content-check adapter."""
 
 import unittest
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -40,6 +42,37 @@ class FakeRails:
 
 
 class NemoGuardrailsTests(unittest.TestCase):
+    def test_customer_can_override_model_and_prompt(self):
+        loaded_config = SimpleNamespace(
+            models=[SimpleNamespace(type="main", model="default-model")],
+            prompts=[SimpleNamespace(task="self_check_output", content="default prompt")],
+        )
+        fake_module = SimpleNamespace(
+            RailsConfig=SimpleNamespace(from_path=lambda _: loaded_config),
+            LLMRails=lambda config: SimpleNamespace(config=config),
+        )
+        settings = nemo_guardrails.NemoRuntimeConfig(
+            config_path=Path("customer-config"),
+            model="customer-model",
+            prompts={"self_check_output": "customer prompt"},
+        )
+
+        with patch.dict(sys.modules, {"nemoguardrails": fake_module}):
+            rails = nemo_guardrails._load_rails(settings)
+
+        self.assertEqual(rails.config.models[0].model, "customer-model")
+        self.assertEqual(rails.config.prompts[0].content, "customer prompt")
+
+    def test_customer_checker_uses_injected_review_instruction(self):
+        rails = FakeRails()
+        settings = nemo_guardrails.NemoRuntimeConfig(review_instruction="Customer content policy check")
+
+        with patch.object(nemo_guardrails, "_load_rails", return_value=rails):
+            verdict = nemo_guardrails.NemoGuardrailsChecker(settings)("Agent output")
+
+        self.assertTrue(verdict["passed"])
+        self.assertEqual(rails.received[0][0]["content"], "Customer content policy check")
+
     def test_allowed_agent_output_is_checked_by_output_rail(self):
         rails = FakeRails()
         with patch.object(nemo_guardrails, "_load_rails", return_value=rails), patch.object(nemo_guardrails, "_RAILS", None):
