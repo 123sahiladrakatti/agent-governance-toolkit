@@ -306,7 +306,7 @@ def run_diamond_session(count: int = 40, seed: int = 7) -> list[GraphOutcome]:
         alerts[star_index] = _replace(star, transactions=(first,) + star.transactions[1:])
     conflict_index = min(1, count - 1)
     conflict_alert = alerts[conflict_index]
-    conflict_customer = _replace(conflict_alert.customer, name="Viktor Petrov Holdings")
+    conflict_customer = _replace(conflict_alert.customer, name="Org 3")
     alerts[conflict_index] = _replace(conflict_alert, customer=conflict_customer)
     outcomes: list[GraphOutcome] = []
     for index, alert in enumerate(alerts):

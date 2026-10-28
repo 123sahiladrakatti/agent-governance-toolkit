@@ -229,7 +229,7 @@ class GatedRun:
 # above is unchanged. A GraphStep may have several parents, so fan-in provenance
 # is kept per parent rather than as a single received_from string.
 # ---------------------------------------------------------------------------
-SANCTIONS_WATCHLIST = frozenset({"Viktor Petrov Holdings", "Al-Noor Exchange", "Northwind Shell Co"})
+SANCTIONS_WATCHLIST = frozenset({"Org 1", "Org 2", "Org 3"})
 
 
 @dataclass(frozen=True)

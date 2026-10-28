@@ -1,5 +1,5 @@
 
-"""AML reference UI running on the domain-agnostic governance framework.
+"""Runtime agent governance framework demo, with AML plugged in as the example pipeline.
 
 Run: streamlit run app.py
 """
@@ -9,22 +9,29 @@ from __future__ import annotations
 import html
 import json
 from datetime import date, datetime, time
+from pathlib import Path
 
 import streamlit as st
 
-from agent_sim import DISPOSITION_AGENT, SANCTIONS_AGENT, build_diamond
+from agent_sim import DISPOSITION_AGENT, SANCTIONS_AGENT
 from agt_resolver import GraphGovernor
+from aml.client_payload import AML_RECORD_CODECS, simulate_aml_case
+from client_pipeline import (
+    ClientPipelineError,
+    compose_client_payload,
+    ingest_client_pipeline,
+    load_pipeline_definition,
+)
 from domain import (
     Alert,
     CustomerProfile,
-    GraphOutcome,
     SANCTIONS_WATCHLIST,
     Transaction,
 )
 from graph_integrity import check_graph_integrity
 
 
-st.set_page_config(page_title="Governed AML Simulation", page_icon="◆", layout="wide")
+st.set_page_config(page_title="Runtime Agent Governance", page_icon="◆", layout="wide")
 
 st.markdown("""
 <style>
@@ -41,7 +48,7 @@ html,body,[class*="css"] { font-family:ui-sans-serif,system-ui,-apple-system,Bli
 .section-help { color:var(--muted); margin:0 0 .9rem; font-size:.9rem; line-height:1.5; }
 .watchlist { border:1px solid #ecd9ad; background:var(--amber-bg); padding:.75rem .9rem; font-size:.85rem; margin:.7rem 0; }
 .simulator { border:1px solid var(--line); background:#fff; padding:1.2rem; }
-.event { display:grid; grid-template-columns:18px 205px 105px 1fr; gap:.65rem; align-items:start; padding:.62rem 0; border-bottom:1px solid var(--line); font-size:.85rem; }
+.event { display:grid; grid-template-columns:18px 250px 105px 1fr; gap:.65rem; align-items:start; padding:.62rem 0; border-bottom:1px solid var(--line); font-size:.85rem; }
 .event:last-child { border-bottom:0; }
 .event .dot { width:11px; height:11px; border-radius:50%; margin-top:.24rem; background:var(--muted); }
 .event.pass .dot { background:var(--green); }
@@ -75,6 +82,22 @@ html,body,[class*="css"] { font-family:ui-sans-serif,system-ui,-apple-system,Bli
 .pill { display:inline-block; padding:.2rem .5rem; font:700 .72rem ui-monospace,SFMono-Regular,Menlo,monospace; }
 .pill.live { color:var(--green); background:var(--green-bg); border:1px solid #b7dcc6; }
 .pill.fallback { color:var(--gold); background:var(--amber-bg); border:1px solid #ecd9ad; }
+.stages { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:.5rem; }
+.stage { border:1px solid #bcd3e4; background:var(--blue-bg); padding:.7rem .75rem; font-size:.82rem; line-height:1.4; }
+.stage .num { font:700 .7rem ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--blue); }
+.stage strong { display:block; margin:.2rem 0 .25rem; color:var(--ink); }
+.stage span { color:var(--muted); }
+.stage.last { border-color:var(--blue); }
+.plugin-row { display:grid; grid-template-columns:1fr 2fr; gap:.5rem; margin-top:.5rem; }
+.plugin-row div { padding:.65rem .75rem; font-size:.82rem; line-height:1.45; }
+.plugin-row .plug { border:1px dashed #a897c4; background:var(--purple-bg); }
+.plugin-row .note { border:1px solid var(--line); background:#fff; color:var(--muted); }
+.tag { display:inline-block; margin-right:.35rem; padding:.05rem .35rem; font:700 .62rem ui-monospace,SFMono-Regular,Menlo,monospace; vertical-align:1px; }
+.tag.fw { color:var(--blue); background:var(--blue-bg); border:1px solid #bcd3e4; }
+.tag.plug { color:var(--purple); background:var(--purple-bg); border:1px dashed #a897c4; }
+.example-frame { border-left:3px dashed #a897c4; padding-left:.9rem; }
+@media(max-width:960px) { .stages { grid-template-columns:repeat(3,minmax(0,1fr)); } }
+@media(max-width:760px) { .stages,.plugin-row { grid-template-columns:1fr; } }
 @media(max-width:760px) { .why-grid,.state-compare { grid-template-columns:1fr; } .event { grid-template-columns:18px 1fr; } .event .status,.event .detail { grid-column:2; } }
 </style>
 """, unsafe_allow_html=True)
@@ -93,33 +116,93 @@ def normalize_date(value: object) -> datetime:
 
 
 st.markdown(
-<<<<<<< HEAD
-    '<div class="hero">'
-    '<p class="kicker">Runtime agent governance on a fan-out / fan-in AML investigation graph</p>'
-    '<h1>Conflicting agent views need reconciliation before clearance.</h1>'
-    '<p>One alert fans out to three parallel agents and fans back in to a fourth that merges their '
-    'results. In the conflict case, the screening agent is correct \u2014 it flags a probable watchlist match \u2014 '
-    'but the disposition agent reads a stale version of that finding from case state and clears the customer '
-    'without reconciling the flag. The watchlist itself is current; what is stale is the version of the '
-    'screening finding the decider used. AGT authorizes actions; '
-    'the behavioral resolver checks consistency and correctness; NeMo checks output content; final Action '
-    'Governance blocks or routes the unresolved case to human review.</p>'
-    '</div>',
-=======
-    '<div class="hero"><div class="kicker">AML REFERENCE IMPLEMENTATION</div>'
-    '<h1>Enter a case. Watch the governance framework evaluate it.</h1>'
-    '<p>AML is the visible example, while authorization, trace integrity, NeMo monitoring, optional correctness, '
-    'Action Governance, attribution, and audit remain domain-agnostic framework capabilities.</p></div>',
->>>>>>> 0b063cce (Updated code)
+    '<div class="hero"><div class="kicker">GOVERNANCE FRAMEWORK · AML SHOWN AS AN EXAMPLE PIPELINE</div>'
+    '<h1>Runtime governance for any agentic pipeline.</h1>'
+    '<p>This is a domain-agnostic runtime governance framework. It runs the same generic checks on any '
+    'multi-agent pipeline: deterministic authorization, trace integrity, content monitoring, an optional '
+    'correctness plug-in, and an Action Governance gate that makes the final decision, with attribution and audit. '
+    'Anti-money-laundering (AML) is the example pipeline plugged in here to make it concrete.</p></div>',
     unsafe_allow_html=True,
 )
 
-# --------------------------------------------------------------------------- AML input
-st.markdown('<p class="section-label">RUN THE AML REFERENCE</p>', unsafe_allow_html=True)
-st.markdown('<h2 class="section-title">Customer and transaction information</h2>', unsafe_allow_html=True)
+# --------------------------------------------------------------------------- framework stages
+st.markdown('<p class="section-label">HOW THE FRAMEWORK GOVERNS</p>', unsafe_allow_html=True)
+st.markdown('<h2 class="section-title">Six fixed governance stages</h2>', unsafe_allow_html=True)
+FRAMEWORK_STAGES = [
+    ("Ingestion & normalization", "A client's pipeline JSON is validated into a normalized PipelineTrace."),
+    ("Deterministic authorization", "AGT + customer policy authorize every agent handoff."),
+    ("Generic trace integrity", "Provenance, version, and conflict checks across the trace."),
+    ("NeMo content checks", "Agent outputs checked with the customer's model and prompts."),
+    ("Optional correctness", "A domain plug-in recomputes and attributes agent results."),
+    ("Action Governance gate", "AGT combines every signal into continue, review, or block."),
+]
+stage_html = "".join(
+    f'<div class="stage{" last" if i == len(FRAMEWORK_STAGES) else ""}"><div class="num">FRAMEWORK · {i}</div>'
+    f'<strong>{esc(title)}</strong><span>{esc(detail)}</span></div>'
+    for i, (title, detail) in enumerate(FRAMEWORK_STAGES, start=1)
+)
 st.markdown(
-    '<p class="section-help">The frontend collects case records only. The AML adapter and the generic governance '
-    'architecture run behind the application.</p>',
+    f'<div class="stages">{stage_html}</div>'
+    '<div class="plugin-row">'
+    '<div class="plug"><span class="tag plug">AML PLUG-IN</span><b>Swappable domain pieces:</b> '
+    'the AML example pipeline (sends client-pipeline JSON to stage 1) and the AML correctness component (fills stage 5).</div>'
+    '<div class="note">Swap the AML pipeline and correctness component for any domain; '
+    'the governance stages stay the same.</div>'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+# --------------------------------------------------------------------------- the client pipeline (static definition)
+PIPELINE_PATH = Path(__file__).parent / "client_pipelines" / "aml_pipeline.json"
+
+st.markdown('<p class="section-label">THE CLIENT PIPELINE · STATIC DEFINITION</p>', unsafe_allow_html=True)
+try:
+    # Re-read on every run so edits to the client's file take effect immediately.
+    pipeline_definition = load_pipeline_definition(PIPELINE_PATH)
+except ClientPipelineError as exc:
+    st.error(f"Client pipeline definition rejected: {exc}")
+    st.stop()
+pipeline_system = pipeline_definition["system"]
+pipeline_policy = pipeline_definition["policy"]
+st.markdown(
+    f'<h2 class="section-title">Loaded client pipeline: <code>{esc(PIPELINE_PATH.name)}</code></h2>',
+    unsafe_allow_html=True,
+)
+st.markdown(
+    '<p class="section-help">Provided once by the client: its agents, who hands off to whom, what each agent is '
+    'permitted to do, and its own deterministic policies. It holds no case and no run. The permissions and '
+    'policies enforced below come from this file.</p>',
+    unsafe_allow_html=True,
+)
+st.dataframe([{
+    "node": agent.get("node_id", ""),
+    "agent": agent["id"],
+    "role": agent.get("role", ""),
+    "receives from": ", ".join(pipeline_system["topology"].get(agent["id"], [])) or "root",
+    "declared permissions": ", ".join(pipeline_system["permissions"].get(agent["id"], [])),
+} for agent in pipeline_system["agents"]], hide_index=True, width="stretch")
+with st.expander("Client policies and raw definition", expanded=False):
+    for key in ("graph", "action"):
+        document = pipeline_policy[key]
+        st.markdown(
+            f"**{esc(document.get('name', key))}** (default: `{esc(document.get('default_action', '-'))}`)"
+        )
+        st.dataframe([{
+            "rule": rule.get("name"),
+            "stage": rule.get("stage"),
+            "condition": rule.get("condition"),
+            "action": rule.get("action"),
+            "priority": rule.get("priority"),
+        } for rule in document.get("rules", [])], hide_index=True, width="stretch")
+    st.code(PIPELINE_PATH.read_text(encoding="utf-8"), language="json")
+
+# --------------------------------------------------------------------------- live case (dynamic)
+st.markdown('<p class="section-label">LIVE CASE · ENTERED NOW</p>', unsafe_allow_html=True)
+st.markdown('<h2 class="section-title">Run a live AML case through the client pipeline</h2>', unsafe_allow_html=True)
+st.markdown(
+    '<p class="section-help example-frame">On submit, the client\'s AML agents (simulated here, since there is no '
+    'real client runtime) execute this case. Their run is combined with the loaded pipeline definition and the '
+    'framework governs it. The governance itself is domain-agnostic.</p>',
     unsafe_allow_html=True,
 )
 st.markdown(
@@ -163,69 +246,9 @@ with st.form("aml-case-input"):
         },
     )
     submitted = st.form_submit_button(
-        "Submit case to governed pipeline", type="primary", width="stretch"
+        "Run live case through the client pipeline", type="primary", width="stretch"
     )
 
-<<<<<<< HEAD
-# --------------------------------------------------------------------------- scene 1: records
-st.markdown('<p class="stage-tag">Walkthrough &middot; one alert through the diamond</p>', unsafe_allow_html=True)
-st.markdown(f'<h2 class="stage-title">{esc(alert.alert_id)} &middot; {esc(alert.customer.name)}</h2>', unsafe_allow_html=True)
-rows = "".join(
-    f"<tr><td>{t.id}</td><td>{t.timestamp:%b %d}</td><td>{t.type.replace('_', ' ')}</td><td class='num'>{money(t.amount)}</td></tr>"
-    for t in alert.transactions
-)
-st.markdown(
-    f'<div class="scene"><h4>1 &nbsp; The actual records</h4>'
-    f'<table class="facts"><thead><tr><th>Transaction</th><th>Date</th><th>Type</th><th>Amount</th></tr></thead><tbody>{rows}</tbody></table>'
-    f'<p style="margin:.7rem 0 0;font-size:.9rem;color:var(--muted)">Recomputed from these records: {truth.qualifying_count} '
-    f'sub-threshold cash deposits totalling <b>{money(truth.aggregate)}</b> '
-    f'{"within" if truth.within_window else "outside"} the {STRUCTURING_WINDOW_DAYS}-day window &mdash; '
-    f'{"meets this demo\u2019s potential-structuring rule and produces a FILE_SAR referral." if truth.is_structuring else "does not meet this demo\u2019s structuring rule (not-structuring)."}</p></div>',
-    unsafe_allow_html=True,
-)
-
-
-# --------------------------------------------------------------------------- scene 2: the diamond
-def diamond_svg(review) -> str:
-    s = {x.agent: x for x in review.outcome.steps}
-    ck = {c.agent: c for c in review.attribution.branch_checks}
-    content = {c["agent"]: c for c in review.content_checks}
-    hop = {(h.sender, h.recipient): h for h in review.handoffs}
-    W, H, BW, BH = 900, 420, 212, 112
-    pos = {TRIAGE_AGENT: (20, 154), SANCTIONS_AGENT: (350, 12), TRANSACTION_AGENT: (350, 154),
-           KYC_AGENT: (350, 296), DISPOSITION_AGENT: (680, 154)}
-    role = {TRIAGE_AGENT: "fans out the alert", SANCTIONS_AGENT: "screens watchlist", TRANSACTION_AGENT: "reads the deposits",
-            KYC_AGENT: "verifies identity", DISPOSITION_AGENT: "merges 3 branches"}
-
-    def node(agent: str) -> str:
-        x, y = pos[agent]
-        st_ = s[agent]
-        c = ck.get(agent)
-        nemo = content.get(agent, {})
-        rail = nemo.get("rail", "skipped")
-        content_passed = bool(nemo.get("passed", True))
-        nemo_label = {
-            "unavailable": "NeMo unavailable",
-            "skipped": "NeMo skipped",
-            "pending": "NeMo pending",
-        }.get(str(rail), "NeMo pass" if content_passed else "NeMo flag")
-        if agent == TRANSACTION_AGENT and c and not c.matches:
-            fill, stroke, sw, tone = "#fff0f1", "#b12632", 2.5, "#b12632"
-            line2 = f"reports: {st_.finding}"
-            line3 = f"used {money(st_.used_aggregate)}; records {money(truth.aggregate)}"
-        elif agent == DISPOSITION_AGENT:
-            stale_conflict = review.outcome.is_conflict_case
-            wrong = c is not None and not c.matches
-            if stale_conflict:
-                fill, stroke, sw, tone = "#fff0f1", "#b12632", 2.5, "#b12632"
-            else:
-                fill, stroke, sw, tone = ("#fbf3e2", "#9a6819", 2, "#9a6819") if wrong else ("#ffffff", "#d7e0e5", 1, "#17212b")
-            line2 = f"merged: {st_.disposition}"
-            line3 = (
-                "used a stale version of screening\u2019s finding"
-                if stale_conflict else
-                "confident: 3/3 branches clean" if st_.finding.endswith("(3/3 branches clean)") else st_.finding
-=======
 if submitted:
     st.session_state.pop("aml_review", None)
     try:
@@ -249,7 +272,6 @@ if submitted:
                 type=str(row["type"]),
                 timestamp=normalize_date(row["date"]),
                 branch=str(row["branch"]),
->>>>>>> 0b063cce (Updated code)
             )
             for row in rows
         )
@@ -267,164 +289,45 @@ if submitted:
             monitoring_rule=monitoring_rule.strip(),
         )
         watchlist_hit = customer.name in SANCTIONS_WATCHLIST
-        progress = st.progress(10, text="AML adapter is creating the agent trace")
-        steps = build_diamond(alert, stale_screening_view=watchlist_hit)
-        outcome = GraphOutcome(
-            alert=alert,
-            steps=steps,
-            fault="stale-screening-view" if watchlist_hit else None,
-            is_conflict_case=watchlist_hit,
-            resource_id=f"aml-alert:{alert.alert_id}",
+        progress = st.progress(10, text="Client pipeline: simulated AML agents are running the live case")
+        # The client side: its agents execute this case, producing only a run and its records.
+        case_run, case_records = simulate_aml_case(alert, stale_screening_view=watchlist_hit)
+        # Pipeline definition (from the client's file) + this case's run = the governed payload.
+        payload_json = json.dumps(
+            compose_client_payload(pipeline_definition, case_run, case_records), indent=2
         )
-        progress.progress(30, text="Normalizing the PipelineTrace")
-        governor = GraphGovernor()
-        progress.progress(45, text="Running authorization, NeMo, and correctness checks")
+        progress.progress(30, text="Framework: ingesting the client-pipeline JSON")
+        # The framework side: everything below is derived only from the ingested JSON.
+        ingested = ingest_client_pipeline(payload_json, AML_RECORD_CODECS)
+        outcome = ingested.outcome
+        policy_overrides = {
+            key: value for key, value in (
+                ("graph_policy", ingested.graph_policy), ("action_policy", ingested.action_policy)
+            ) if value is not None
+        }
+        # Permissions and policies come from the loaded definition, via the ingested payload.
+        governor = GraphGovernor(system_description=ingested.description, **policy_overrides)
+        progress.progress(45, text="Framework: running authorization, trace, NeMo, and correctness checks")
         review = governor.review(outcome)
-        progress.progress(85, text="AGT Action Governance is combining signals")
+        progress.progress(85, text="Framework: Action Governance is combining signals")
         st.session_state.aml_review = {
             "review": review,
             "integrity": check_graph_integrity(outcome),
             "agt_live": governor.agt_live,
+            "payload_json": payload_json,
+            "pipeline_file": PIPELINE_PATH.name,
+            "customer": customer.name,
         }
         progress.progress(100, text="Governance decision complete")
         progress.empty()
+    except ClientPipelineError as exc:
+        st.error(f"The client-pipeline payload was rejected at ingestion: {exc}")
     except (KeyError, TypeError, ValueError) as exc:
         st.error(f"The case could not be processed: {exc}")
 
-<<<<<<< HEAD
-    def edge(a: str, b: str) -> str:
-        ax, ay = pos[a]; bx, by = pos[b]
-        x1, y1, x2, y2 = ax + BW, ay + BH / 2, bx, by + BH / 2
-        h = hop[(a, b)]
-        col = "#9a6819" if h.decision == "PENDING" else ("#176b45" if h.passed else "#b12632")
-        mx, my = (x1 + x2) / 2, (y1 + y2) / 2
-        label = "policy pending" if h.decision == "PENDING" else ("handoff OK" if h.passed else "handoff denied")
-        return (f'<line x1="{x1}" y1="{y1}" x2="{x2 - 4}" y2="{y2}" stroke="{col}" stroke-width="2" marker-end="url(#ah)"/>'
-                f'<rect x="{mx - 48}" y="{my - 10}" width="96" height="19" rx="3" fill="#e7f5ed" stroke="#b7dcc6"/>'
-                f'<text x="{mx}" y="{my + 4}" font-size="10.5" font-weight="700" fill="{col}" text-anchor="middle">{label}</text>')
-
-    edges = "".join(edge(a, b) for a, b in review.outcome.edges)
-    nodes = "".join(node(a) for a in pos)
-    return (f'<svg class="diamond" viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg" font-family="ui-sans-serif,system-ui,sans-serif" role="img" aria-label="Diamond graph">'
-            f'<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
-            f'<path d="M0,0 L10,5 L0,10 z" fill="#667580"/></marker></defs>{edges}{nodes}</svg>')
-
-
-c_step = steps[TRANSACTION_AGENT]
-is_conflict_case = star.outcome.is_conflict_case
-conflict_state_html = ""
-if is_conflict_case:
-    screening_step = steps[SANCTIONS_AGENT]
-    disposition_step = steps[DISPOSITION_AGENT]
-    consumed_screening_finding = disposition_step.received_findings_by_parent[SANCTIONS_AGENT]
-    consumed_screening_version = disposition_step.received_versions_by_parent[SANCTIONS_AGENT]
-    conflict_state_html = (
-        '<div class="state-conflict">'
-        f'<div class="state-version current"><b>Screening finding v{screening_step.finding_version}</b>'
-        f'<small>{esc(screening_step.finding.upper())} - probable watchlist match</small></div>'
-        '<div class="state-arrow">NOT RECONCILED<br>&rarr;</div>'
-        f'<div class="state-version stale"><b>Disposition consumed v{consumed_screening_version}</b>'
-        f'<small>{esc(consumed_screening_finding.upper())} - stale version of screening\u2019s finding</small></div>'
-        '</div>'
-        '<div class="flow-node stale"><b>Disposition agent clears customer</b>'
-        '<small>the newer screening flag was not incorporated or reconciled</small></div>'
-    )
-flow_nemo_flags = [check for check in star.content_checks if not check["passed"]]
-flow_nemo_unavailable = any(check["rail"] == "unavailable" for check in star.content_checks)
-flow_nemo_label = (
-    "NOT RUN" if not has_live_review else
-    "FLAG" if flow_nemo_flags else
-    "UNAVAILABLE" if flow_nemo_unavailable else "PASS"
-)
-flow_action = str(star.policy_decision.get("action", "pending"))
-flow_action_label = {
-    "allow": "CONTINUE",
-    "require_approval": "HUMAN REVIEW",
-    "deny": "BLOCK",
-    "pending": "PENDING EVALUATION",
-}.get(flow_action, flow_action.upper())
-flow_active_outcome = {
-    "allow": "continue",
-    "require_approval": "human",
-    "deny": "block",
-}.get(flow_action)
-if is_conflict_case:
-    flow_case_narrative = (
-        f'<p style="margin:.6rem 0 0;font-size:.9rem;color:var(--muted)">'
-        f'The screening agent correctly found a probable watchlist match (its current finding), but the '
-        f'disposition agent consumed an earlier <b>{esc(consumed_screening_finding)}</b> version of that '
-        f'finding from stale case state and produced <b>CLEAR</b> without reconciliation. This is a '
-        f'multi-agent reconciliation failure, not a stale watchlist \u2014 screening was right; the decider '
-        f'read an outdated version of it. '
-        f'AGT Action Governance routes this unresolved conflict to human review before the clear can commit. '
-        f'The RAG, typology, narrative, and audit stages shown here are the architecture path; '
-        f'this demo executes the graph and governance decision.</p></div>'
-    )
-else:
-    flow_case_narrative = (
-        f'<p style="margin:.6rem 0 0;font-size:.9rem;color:var(--muted)">C read the deposits as '
-        f'{", ".join(money(a) for a in c_step.used_amounts)} instead of '
-        f'{", ".join(money(a) for a in truth.qualifying_amounts)}. B and D are right. '
-        f'E merges the branch findings into <b>{esc(steps[DISPOSITION_AGENT].disposition)}</b>. '
-        f'The RAG, typology, narrative, and audit stages shown here are the architecture path; '
-        f'this demo executes the graph and governance decisions.</p></div>'
-    )
-st.markdown(
-    f'<div class="scene"><h4>2 &nbsp; AML execution flow - top gate to final action</h4>'
-    f'<div class="flowchart" role="img" aria-label="Live AML governance flow diagram">'
-    f'<div class="flow-node policy"><b>AML Policy + AGT deterministic top gate</b>'
-    f'<small>access, limits, and delegated action checks before execution</small></div>'
-    f'<div class="flow-arrow">&#8595;</div>'
-    f'<div class="flow-node alert"><b>Alert: {esc(alert.alert_id)}</b></div>'
-    f'<div class="flow-arrow">&#8595;</div>'
-    f'<div class="flow-node case"><b>Orchestrator / intake agent</b><small>routes case to evidence agents</small></div>'
-    f'<div class="flow-arrow">&#8595; parallel evidence gathering - AGT checks each handoff</div>'
-    f'{diamond_svg(star)}'
-    f'{conflict_state_html}'
-    f'<div class="flow-arrow">&#8595; fan in</div>'
-    f'<div class="flow-node shared"><b>Shared Case State</b><small>branch findings and evidence references merged by the decision agent</small></div>'
-    f'<div class="flow-arrow">&#8595;</div>'
-    f'<div class="flow-node policy"><b>Evidence / RAG - completeness</b><small>architecture stage following the fan-in</small></div>'
-    f'<div class="flow-arrow">&#8595;</div>'
-    f'<div class="flow-node policy"><b>Typology / Rule - deterministic match</b></div>'
-    f'<div class="flow-arrow">&#8595;</div>'
-    f'<div class="flow-reasoning">'
-    f'<div class="flow-node case"><b>Risk reasoning / merged finding</b>'
-    f'<small>record-relative result: {"PASS" if star.attribution.passed else "FLAG"}</small></div>'
-    f'<div class="flow-node signal"><b>NeMo content check: {flow_nemo_label}</b>'
-    f'<small>checked {len(star.content_checks)} authorized agent outputs; {len(flow_nemo_flags)} flagged'
-    f'{"; service unavailable" if flow_nemo_unavailable else ""}</small></div>'
-    f'</div>'
-    f'<div class="flow-arrow">&#8595; authorization + correctness + NeMo signal</div>'
-    f'<div class="flow-node gate"><b>AGT Action Governance - {flow_action_label}</b>'
-    f'<small>{esc(str(star.policy_decision.get("matched_rule") or ("evaluate to produce the final PolicyDecision" if not has_live_review else "default policy")))}</small></div>'
-    f'<div class="flow-arrow">&#8595; branches to three possible actions</div>'
-    f'<div class="flow-outcomes">'
-    f'<div class="flow-node block{" active" if flow_active_outcome == "block" else ""}"><b>DENY / BLOCK</b><small>authorization or correctness failure</small></div>'
-    f'<div class="flow-node human{" active" if flow_active_outcome == "human" else ""}"><b>REQUIRE APPROVAL / HUMAN REVIEW</b><small>content flag or unresolved conflict</small></div>'
-    f'<div class="flow-node continue{" active" if flow_active_outcome == "continue" else ""}"><b>ALLOW / CONTINUE</b><small>policy allows the action</small></div>'
-    f'</div>'
-    f'<div class="continue-connector"><span>continue</span><div class="continue-drop"></div></div>'
-    f'<div class="flow-node alert"><b>8. Disposition Agent</b><small>CLEAR / ESCALATE / refer for SAR</small></div>'
-    f'<div class="flow-arrow">&#8595;</div>'
-    f'<div class="flow-node alert"><b>9. SAR / Narrative Agent</b><small>claims linked to evidence IDs</small></div>'
-    f'<div class="flow-arrow">&#8595;</div>'
-    f'<div class="flow-node policy"><b>10. Audit / Evidence Agent</b><small>full reconstructable record</small></div>'
-    f'</div>'
-    f'<p style="margin:.2rem 0 .7rem;font-size:.84rem;color:var(--muted)">'
-    f'{"Amber labels are pending; evaluate the session to run the top gate, NeMo, and final policy." if not has_live_review else "Green handoff labels show AGT authorization; branch nodes report content and correctness signals."} '
-    f'NeMo checks content only. The behavioral resolver checks records, and AGT Action Governance decides.</p>'
-    f'{flow_case_narrative}',
-    unsafe_allow_html=True,
-)
-
-if not has_live_review:
-    st.info("The diagram is a no-call preview. Evaluate the graph session to run AGT policies and NeMo content checks.")
-=======
 result = st.session_state.get("aml_review")
 if result is None:
-    st.info("Enter customer and transaction information to run the AML reference through the framework.")
->>>>>>> 0b063cce (Updated code)
+    st.info("Enter a live case above to run it through the loaded client pipeline.")
     st.stop()
 
 review = result["review"]
@@ -438,21 +341,45 @@ action = str(review.policy_decision.get("action", "deny"))
 action_label = {"allow": "CONTINUE", "require_approval": "HUMAN REVIEW", "deny": "BLOCK"}.get(action, action.upper())
 verdict_css = {"allow": "continue", "require_approval": "review", "deny": "block"}.get(action, "block")
 
+# --------------------------------------------------------------------------- ingested client payload
+st.markdown('<p class="section-label">GOVERNED PAYLOAD · DEFINITION + LIVE RUN</p>', unsafe_allow_html=True)
+st.markdown(
+    f'<p class="section-help">The framework governed the case for <b>{esc(result["customer"])}</b> flowing through '
+    f'the client\'s pipeline. <code>system</code> and <code>policy</code> come from '
+    f'<code>{esc(result["pipeline_file"])}</code>; <code>run</code> and <code>records</code> come from this live '
+    'case\'s simulated run. The governance below ran only on this ingested payload.</p>',
+    unsafe_allow_html=True,
+)
+with st.expander(
+    f"Governed payload: {result['pipeline_file']} definition + this case's run", expanded=False
+):
+    st.code(result["payload_json"], language="json")
+
 # --------------------------------------------------------------------------- event stream
 st.markdown('<p class="section-label">LIVE GOVERNANCE RUN</p>', unsafe_allow_html=True)
-events: list[tuple[str, str, str, str]] = [
-    ("AML ingestion adapter", "PASS", "pass", f"Normalized {len(review.outcome.steps)} agent steps."),
+st.markdown(
+    '<p class="section-help"><span class="tag fw">FRAMEWORK</span>generic stages, identical for every pipeline '
+    '&nbsp;&nbsp;<span class="tag plug">AML PLUG-IN</span>the swappable domain pieces slotted into them.</p>',
+    unsafe_allow_html=True,
+)
+FW, PLUG = "fw", "plug"
+events: list[tuple[str, str, str, str, str]] = [
+    (PLUG, "Client agents run case (AML)", "RAN", "pass",
+     f"Simulated AML agents executed the live case through {result['pipeline_file']}'s topology."),
+    (FW, "JSON ingestion", "PASS", "pass",
+     f"Definition + live run validated into a PipelineTrace of {len(review.outcome.steps)} agent steps; "
+     f"permissions and policies taken from {result['pipeline_file']}."),
 ]
 for handoff in review.handoffs:
     events.append((
-        f"AGT · {handoff.sender} → {handoff.recipient}",
+        FW, f"Authorization · {handoff.sender} → {handoff.recipient}",
         "AUTHORIZED" if handoff.passed else "DENIED",
         "pass" if handoff.passed else "fail",
         handoff.reason or handoff.rule or "Handoff policy evaluated.",
     ))
 trace_status = "PASS" if integrity.passed else "STALE / CONFLICT"
 events.append((
-    "Generic trace checks", trace_status,
+    FW, "Generic trace integrity", trace_status,
     "pass" if integrity.passed else "review", integrity.reason,
 ))
 for check in review.content_checks:
@@ -462,23 +389,24 @@ for check in review.content_checks:
         status, css = "UNAVAILABLE", "review"
     else:
         status, css = "PASS", "pass"
-    events.append((f"NeMo · {check['agent']}", status, css, str(check["reason"])))
+    events.append((FW, f"NeMo content · {check['agent']}", status, css, str(check["reason"])))
 events.append((
-    "AML correctness plug-in",
+    PLUG, "Correctness plug-in (AML)",
     "PASS" if review.attribution.passed else "FLAG",
     "pass" if review.attribution.passed else "review",
     review.attribution.reason,
 ))
 events.append((
-    "AGT Action Governance", action_label,
+    FW, "Action Governance gate", action_label,
     "pass" if action == "allow" else ("review" if action == "require_approval" else "fail"),
     str(review.policy_decision.get("reason", "Final policy evaluated.")),
 ))
 
 event_html = "".join(
-    f'<div class="event {css}"><span class="dot"></span><span class="phase">{esc(phase)}</span>'
+    f'<div class="event {css}"><span class="dot"></span><span class="phase">'
+    f'<span class="tag {layer}">{"FRAMEWORK" if layer == FW else "AML PLUG-IN"}</span>{esc(phase)}</span>'
     f'<span class="status">{esc(status)}</span><span class="detail">{esc(detail)}</span></div>'
-    for phase, status, css, detail in events
+    for layer, phase, status, css, detail in events
 )
 engine_pill = (
     '<span class="pill live">AGT LIVE</span>' if result["agt_live"]
@@ -491,8 +419,13 @@ st.markdown(
 
 # --------------------------------------------------------------------------- state comparison and verdict
 st.markdown('<p class="section-label">WHERE & WHY</p>', unsafe_allow_html=True)
+st.markdown(
+    '<p class="section-help">The framework makes the decision below from its generic stages; '
+    'the AML case is only the input it governed.</p>',
+    unsafe_allow_html=True,
+)
 if integrity.passed:
-    st.success("No governance conflict: screening and the decision agent used consistent state.")
+    st.success("Framework trace integrity: no conflict. The screening and decision agents used consistent state.")
 else:
     st.markdown(
         f'<div class="state-compare">'
@@ -509,7 +442,7 @@ origin = (
     if review.attribution.origin_agent else "No failing agent attributed"
 )
 st.markdown(
-    f'<div class="verdict {verdict_css}"><div class="label">FINAL GOVERNANCE DECISION</div>'
+    f'<div class="verdict {verdict_css}"><div class="label">FRAMEWORK GOVERNANCE DECISION · ACTION GOVERNANCE GATE</div>'
     f'<h2>{esc(action_label)}</h2>'
     f'<p><b>Why:</b> {esc(review.attribution.reason)}</p>'
     f'<p><b>Policy result:</b> {esc(str(review.policy_decision.get("reason", "")))}</p>'
