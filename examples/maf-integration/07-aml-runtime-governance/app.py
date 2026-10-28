@@ -11,6 +11,7 @@ import json
 from datetime import date, datetime, time
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 from agt_resolver import GraphGovernor
@@ -187,18 +188,21 @@ PIPELINE_PATH = reference["path"]
 plugin_label = reference["label"]
 
 st.markdown('<p class="section-label">THE CLIENT PIPELINE · STATIC DEFINITION</p>', unsafe_allow_html=True)
+if st.button("Load client pipeline", type="primary"):
+    st.session_state.loaded_pipeline = selected_reference
+if st.session_state.get("loaded_pipeline") != selected_reference:
+    st.info("Load the client pipeline to enable live cases.")
+    st.stop()
 try:
     # Re-read on every run so edits to the client's file take effect immediately.
     pipeline_definition = load_pipeline_definition(PIPELINE_PATH)
 except ClientPipelineError as exc:
+    st.session_state.pop("loaded_pipeline", None)
     st.error(f"Client pipeline definition rejected: {exc}")
     st.stop()
 pipeline_system = pipeline_definition["system"]
 pipeline_policy = pipeline_definition["policy"]
-st.markdown(
-    f'<h2 class="section-title">Loaded client pipeline: <code>{esc(PIPELINE_PATH.name)}</code></h2>',
-    unsafe_allow_html=True,
-)
+st.success("Client pipeline loaded")
 st.markdown(
     '<p class="section-help">Provided once by the client: its agents, who hands off to whom, what each agent is '
     'permitted to do, and its own deterministic policies. It holds no case and no run. The permissions and '
@@ -243,28 +247,33 @@ if selected_reference == "AML":
     st.markdown(
         '<div class="watchlist"><b>Demo watchlist:</b> '
         + ' &middot; '.join(f'<code>{esc(name)}</code>' for name in sorted(SANCTIONS_WATCHLIST))
-        + '<br>Use an exact watchlist name to create a v2 hit while the final agent consumes stale v1 state.</div>',
+        + '<br>Use a watchlist name to see a governance conflict; any other name runs clean. '
+        'A watchlist name creates a v2 hit while the final agent consumes stale v1 state.</div>',
         unsafe_allow_html=True,
     )
-    default_transactions = [
-        {"id": "T-001", "date": date(2026, 1, 5), "type": "cash_deposit", "amount": 2_500.0, "branch": "BR-01"},
-        {"id": "T-002", "date": date(2026, 1, 6), "type": "cash_deposit", "amount": 1_500.0, "branch": "BR-01"},
-    ]
+    empty_transactions = pd.DataFrame({
+        "id": pd.Series(dtype="str"),
+        "date": pd.Series(dtype="datetime64[ns]"),
+        "type": pd.Series(dtype="str"),
+        "amount": pd.Series(dtype="float"),
+        "branch": pd.Series(dtype="str"),
+    })
     with st.form("aml-case-input"):
         c1, c2 = st.columns(2)
         with c1:
-            customer_name = st.text_input("Customer name", placeholder="Jane Smith")
-            account_id = st.text_input("Account ID", value="ACCT-DEMO-001")
+            customer_name = st.text_input("Customer name", placeholder="Enter customer name")
+            account_id = st.text_input("Account ID", placeholder="Enter account id")
         with c2:
-            occupation = st.text_input("Occupation", value="business owner")
+            occupation = st.text_input("Occupation", placeholder="Enter occupation")
             expected_cash = st.number_input(
-                "Expected monthly cash volume", min_value=0.0, value=8_000.0, step=500.0
+                "Expected monthly cash volume", min_value=0.0, value=0.0, step=500.0
             )
         monitoring_rule = st.text_input(
             "Monitoring rule", value="customer and transaction activity review"
         )
+        st.caption("Transactions: add at least one row.")
         edited_transactions = st.data_editor(
-            default_transactions,
+            empty_transactions,
             num_rows="dynamic",
             hide_index=True,
             width="stretch",
@@ -288,23 +297,26 @@ else:
     )
     st.markdown(
         '<div class="watchlist"><b>Healthcare safety examples:</b> ' + examples
-        + '<br>Choose a medication and matching known allergy to create a current v2 contraindication '
-        'that the final care agent receives as stale v1 context. Use synthetic data only.</div>',
+        + '<br>Choose a medication with its matching allergy to see a governance conflict; any other '
+        'combination runs clean. A match creates a current v2 contraindication that the final care agent '
+        'receives as stale v1 context. Use synthetic data only.</div>',
         unsafe_allow_html=True,
     )
     with st.form("healthcare-case-input"):
         c1, c2 = st.columns(2)
         with c1:
-            patient_name = st.text_input("Patient name", value="Alex Morgan")
+            patient_name = st.text_input("Patient name", placeholder="Enter patient name")
             patient_id = st.text_input("Patient ID", value="PAT-DEMO-001")
             patient_age = st.number_input("Age", min_value=0, max_value=120, value=45)
             diagnosis = st.text_input("Diagnosis / care reason", value="bacterial infection")
         with c2:
             medication = st.selectbox(
-                "Medication order", ["Acetaminophen", *MEDICATION_ALLERGENS.keys()]
+                "Medication order", ["Acetaminophen", *MEDICATION_ALLERGENS.keys()],
+                index=None, placeholder="Choose a medication",
             )
             known_allergy = st.selectbox(
-                "Known allergy", ["none", "penicillin", "cephalosporin", "NSAID"]
+                "Known allergy", ["none", "penicillin", "cephalosporin", "NSAID"],
+                index=None, placeholder="Choose a known allergy (or none)",
             )
             coverage_authorized = st.checkbox("Coverage / prior authorization confirmed", value=True)
         submitted = st.form_submit_button(
@@ -315,14 +327,21 @@ if submitted:
     st.session_state.pop("governance_review", None)
     try:
         if selected_reference == "AML":
-            if not customer_name.strip() or not account_id.strip() or not occupation.strip():
-                raise ValueError("Customer name, account ID, and occupation are required")
-            rows = (
-                edited_transactions.to_dict("records")
-                if hasattr(edited_transactions, "to_dict") else list(edited_transactions)
-            )
+            if not customer_name.strip():
+                raise ValueError("Enter a customer name")
+            if not account_id.strip() or not occupation.strip():
+                raise ValueError("Account ID and occupation are required")
+            rows = [
+                row for row in (
+                    edited_transactions.to_dict("records")
+                    if hasattr(edited_transactions, "to_dict") else list(edited_transactions)
+                )
+                if not all(pd.isna(value) or value == "" for value in row.values())
+            ]
             if not rows:
                 raise ValueError("Add at least one transaction")
+            if any(pd.isna(value) or value == "" for row in rows for value in row.values()):
+                raise ValueError("Complete every field of each transaction row")
             transactions = tuple(
                 Transaction(
                     id=str(row["id"]), account_id=account_id.strip(), amount=float(row["amount"]),
@@ -342,8 +361,12 @@ if submitted:
             correctness_component = AmlCorrectnessComponent()
             subject_label, subject_value = "Customer", customer.name
         else:
-            if not patient_name.strip() or not patient_id.strip() or not diagnosis.strip():
-                raise ValueError("Patient name, patient ID, and diagnosis are required")
+            if not patient_name.strip():
+                raise ValueError("Enter a patient name")
+            if medication is None or known_allergy is None:
+                raise ValueError("Choose a medication order and a known allergy (or none)")
+            if not patient_id.strip() or not diagnosis.strip():
+                raise ValueError("Patient ID and diagnosis are required")
             domain_records = HealthcareCase(
                 "HC-INTERACTIVE", patient_id.strip(), patient_name.strip(), int(patient_age),
                 diagnosis.strip(), medication, known_allergy, bool(coverage_authorized)
@@ -385,7 +408,6 @@ if submitted:
             "integrity": check_graph_integrity(outcome),
             "agt_live": governor.agt_live,
             "payload_json": payload_json,
-            "pipeline_file": PIPELINE_PATH.name,
             "subject_label": subject_label,
             "subject_value": subject_value,
             "final_agent": ingested.description.final_agent,
@@ -432,12 +454,12 @@ st.markdown('<p class="section-label">GOVERNED PAYLOAD · DEFINITION + LIVE RUN<
 st.markdown(
     f'<p class="section-help">The framework governed the case for <b>{esc(result["subject_value"])}</b> flowing through '
     f'the client\'s pipeline. <code>system</code> and <code>policy</code> come from '
-    f'<code>{esc(result["pipeline_file"])}</code>; <code>run</code> and <code>records</code> come from this live '
+    f'the client pipeline definition; <code>run</code> and <code>records</code> come from this live '
     'case\'s simulated run. The governance below ran only on this ingested payload.</p>',
     unsafe_allow_html=True,
 )
 with st.expander(
-    f"Governed payload: {result['pipeline_file']} definition + this case's run", expanded=False
+    "Governed payload: client pipeline definition + this case's run", expanded=False
 ):
     st.code(result["payload_json"], language="json")
 
@@ -451,10 +473,10 @@ st.markdown(
 FW, PLUG = "fw", "plug"
 events: list[tuple[str, str, str, str, str]] = [
     (PLUG, f"Client agents run case ({result['domain']})", "RAN", "pass",
-     f"Simulated {result['domain']} agents executed the live case through {result['pipeline_file']}'s topology."),
+     f"Simulated {result['domain']} agents executed the live case through the client pipeline's topology."),
     (FW, "JSON ingestion", "PASS", "pass",
      f"Definition + live run validated into a PipelineTrace of {len(review.outcome.steps)} agent steps; "
-     f"permissions and policies taken from {result['pipeline_file']}."),
+     "permissions and policies taken from the client pipeline definition."),
 ]
 for handoff in review.handoffs:
     events.append((
