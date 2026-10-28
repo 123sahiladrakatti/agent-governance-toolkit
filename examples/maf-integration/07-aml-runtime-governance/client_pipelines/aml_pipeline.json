@@ -1,0 +1,178 @@
+{
+  "format": "client-pipeline-definition/v1",
+  "description": "Client pipeline definition for the AML example: declared agents, topology, permissions, and the client's own deterministic policies. It contains no run and no case; each live case's run and records are supplied at runtime and combined with this definition.",
+  "system": {
+    "name": "aml-diamond",
+    "schema": "aml-diamond/v1",
+    "agents": [
+      {
+        "id": "intake",
+        "node_id": "A",
+        "role": "Routes the alert to the screening, transaction, and KYC branches"
+      },
+      {
+        "id": "customer-screening",
+        "node_id": "B",
+        "role": "Screens the customer against the watchlist"
+      },
+      {
+        "id": "transaction-analysis",
+        "node_id": "C",
+        "role": "Analyzes transactions for structuring"
+      },
+      {
+        "id": "kyc-entity",
+        "node_id": "D",
+        "role": "Checks activity against the customer's KYC profile"
+      },
+      {
+        "id": "decision",
+        "node_id": "E",
+        "role": "Merges branch findings into the case disposition"
+      }
+    ],
+    "topology": {
+      "intake": [],
+      "customer-screening": [
+        "intake"
+      ],
+      "transaction-analysis": [
+        "intake"
+      ],
+      "kyc-entity": [
+        "intake"
+      ],
+      "decision": [
+        "customer-screening",
+        "transaction-analysis",
+        "kyc-entity"
+      ]
+    },
+    "permissions": {
+      "intake": [
+        "fan_out_alert"
+      ],
+      "customer-screening": [
+        "screen_sanctions"
+      ],
+      "transaction-analysis": [
+        "analyze_transactions",
+        "review_records"
+      ],
+      "kyc-entity": [
+        "verify_kyc"
+      ],
+      "decision": [
+        "merge_disposition"
+      ]
+    },
+    "final_agent": "decision",
+    "final_action": "commit_disposition",
+    "resolver_action": "resolve_behavioral_correctness",
+    "handoff_action": "aml_graph_handoff",
+    "resource_prefix": "aml-alert",
+    "escalation_outcomes": [
+      "ESCALATE"
+    ]
+  },
+  "policy": {
+    "graph": {
+      "apiVersion": "governance.toolkit/v1",
+      "version": "1.0",
+      "name": "aml-graph-governance",
+      "description": "Per-hop handoff authorization (static rules) and merge-commit governance delegated to the registered BehavioralAuthorityResolver.",
+      "agents": [
+        "*"
+      ],
+      "scope": "global",
+      "default_action": "allow",
+      "rules": [
+        {
+          "name": "allow-authorized-handoff",
+          "description": "Handoff is on a declared edge and the recipient's action is delegated.",
+          "stage": "pre_tool",
+          "condition": "handoff.status == 'authorized'",
+          "action": "allow",
+          "priority": 100
+        },
+        {
+          "name": "deny-unauthorized-handoff",
+          "description": "Any handoff not explicitly authorized is denied.",
+          "stage": "pre_tool",
+          "condition": "handoff.status != 'authorized'",
+          "action": "deny",
+          "priority": 100
+        },
+        {
+          "name": "deny-commit-without-graph",
+          "description": "Fail closed: a merge commit must carry its graph and records.",
+          "stage": "post_tool",
+          "condition": "aml_graph.schema != 'aml-diamond/v1'",
+          "action": "deny",
+          "priority": 100
+        }
+      ]
+    },
+    "action": {
+      "apiVersion": "governance.toolkit/v1",
+      "version": "1.0",
+      "name": "aml-action-governance",
+      "description": "Final authorization, correctness, and NeMo content decision.",
+      "agents": [
+        "*"
+      ],
+      "scope": "global",
+      "default_action": "deny",
+      "rules": [
+        {
+          "name": "deny-unauthorized-action",
+          "description": "Final action is not authorized.",
+          "stage": "post_tool",
+          "condition": "action.status == 'unauthorized'",
+          "action": "deny",
+          "priority": 200
+        },
+        {
+          "name": "require-review-for-unreconciled-conflict",
+          "description": "A stale or contradictory agent finding requires human reconciliation.",
+          "stage": "post_tool",
+          "condition": "governance.status == 'conflict'",
+          "action": "require_approval",
+          "priority": 180
+        },
+        {
+          "name": "deny-incorrect-behavioral-result",
+          "description": "Record-relative behavioral governance failed.",
+          "stage": "post_tool",
+          "condition": "governance.status == 'failed'",
+          "action": "deny",
+          "priority": 150
+        },
+        {
+          "name": "require-review-for-nemo-flag",
+          "description": "NeMo content flags require human approval.",
+          "stage": "post_tool",
+          "condition": "nemo.status == 'flagged'",
+          "action": "require_approval",
+          "priority": 100
+        },
+        {
+          "name": "allow-clean-action",
+          "description": "Authorization, correctness, and NeMo checks passed.",
+          "stage": "post_tool",
+          "condition": "action.status == 'authorized' and governance.status == 'passed' and nemo.status == 'passed'",
+          "action": "allow",
+          "priority": 50
+        },
+        {
+          "name": "allow-with-nemo-unavailable",
+          "description": "Allow with an explicit unavailable NeMo signal when deterministic checks pass.",
+          "stage": "post_tool",
+          "condition": "action.status == 'authorized' and governance.status == 'passed' and nemo.status == 'unavailable'",
+          "action": "allow",
+          "priority": 40
+        }
+      ]
+    }
+  }
+}
