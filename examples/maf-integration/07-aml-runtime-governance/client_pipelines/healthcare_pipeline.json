@@ -1,0 +1,122 @@
+{
+  "format": "client-pipeline-definition/v1",
+  "description": "Healthcare company pipeline definition: declared care agents, topology, permissions, and governance policies. Live patient cases are attached only at runtime.",
+  "system": {
+    "name": "healthcare-care-path",
+    "schema": "healthcare-care-path/v1",
+    "agents": [
+      {"id": "patient-intake", "node_id": "H-A", "role": "Routes the submitted patient care request"},
+      {"id": "allergy-safety", "node_id": "H-B", "role": "Checks medication safety against allergy records"},
+      {"id": "medication-review", "node_id": "H-C", "role": "Validates the medication order"},
+      {"id": "coverage-review", "node_id": "H-D", "role": "Checks payer authorization status"},
+      {"id": "care-decision", "node_id": "H-E", "role": "Merges clinical and coverage findings into a care decision"}
+    ],
+    "topology": {
+      "patient-intake": [],
+      "allergy-safety": ["patient-intake"],
+      "medication-review": ["patient-intake"],
+      "coverage-review": ["patient-intake"],
+      "care-decision": ["allergy-safety", "medication-review", "coverage-review"]
+    },
+    "permissions": {
+      "patient-intake": ["route_care_request"],
+      "allergy-safety": ["evaluate_allergy_safety"],
+      "medication-review": ["validate_medication_order"],
+      "coverage-review": ["verify_coverage"],
+      "care-decision": ["merge_care_decision"]
+    },
+    "final_agent": "care-decision",
+    "final_action": "commit_care_decision",
+    "resolver_action": "resolve_care_correctness",
+    "handoff_action": "healthcare_handoff",
+    "resource_prefix": "healthcare-case",
+    "escalation_outcomes": ["HOLD_FOR_CLINICAL_REVIEW", "HOLD_FOR_AUTHORIZATION"]
+  },
+  "policy": {
+    "graph": {
+      "apiVersion": "governance.toolkit/v1",
+      "version": "1.0",
+      "name": "healthcare-graph-governance",
+      "description": "Authorize declared healthcare handoffs and delegate trace/correctness evaluation to the resolver.",
+      "agents": ["*"],
+      "scope": "global",
+      "default_action": "allow",
+      "rules": [
+        {
+          "name": "allow-authorized-handoff",
+          "stage": "pre_tool",
+          "condition": "handoff.status == 'authorized'",
+          "action": "allow",
+          "priority": 100
+        },
+        {
+          "name": "deny-unauthorized-handoff",
+          "stage": "pre_tool",
+          "condition": "handoff.status != 'authorized'",
+          "action": "deny",
+          "priority": 100
+        },
+        {
+          "name": "deny-commit-without-graph",
+          "stage": "post_tool",
+          "condition": "governance_graph.schema != 'healthcare-care-path/v1'",
+          "action": "deny",
+          "priority": 100
+        }
+      ]
+    },
+    "action": {
+      "apiVersion": "governance.toolkit/v1",
+      "version": "1.0",
+      "name": "healthcare-action-governance",
+      "description": "Combine healthcare authorization, trace integrity, content, and optional correctness signals.",
+      "agents": ["*"],
+      "scope": "global",
+      "default_action": "deny",
+      "rules": [
+        {
+          "name": "deny-unauthorized-action",
+          "stage": "post_tool",
+          "condition": "action.status == 'unauthorized'",
+          "action": "deny",
+          "priority": 200
+        },
+        {
+          "name": "require-review-for-unreconciled-conflict",
+          "stage": "post_tool",
+          "condition": "governance.status == 'conflict'",
+          "action": "require_approval",
+          "priority": 180
+        },
+        {
+          "name": "deny-incorrect-behavioral-result",
+          "stage": "post_tool",
+          "condition": "governance.status == 'failed'",
+          "action": "deny",
+          "priority": 150
+        },
+        {
+          "name": "require-review-for-nemo-flag",
+          "stage": "post_tool",
+          "condition": "nemo.status == 'flagged'",
+          "action": "require_approval",
+          "priority": 100
+        },
+        {
+          "name": "allow-clean-action",
+          "stage": "post_tool",
+          "condition": "action.status == 'authorized' and governance.status == 'passed' and nemo.status == 'passed'",
+          "action": "allow",
+          "priority": 50
+        },
+        {
+          "name": "allow-with-nemo-unavailable",
+          "stage": "post_tool",
+          "condition": "action.status == 'authorized' and governance.status == 'passed' and nemo.status == 'unavailable'",
+          "action": "allow",
+          "priority": 40
+        }
+      ]
+    }
+  }
+}

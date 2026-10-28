@@ -71,6 +71,11 @@ class ToolkitGovernanceAdapter:
             str(rule.get("condition")): str(rule.get("name"))
             for rule in policy.get("rules", [])
         }
+        self.rule_actions = {
+            str(rule.get("condition")): str(rule.get("action"))
+            for rule in policy.get("rules", [])
+        }
+        self.default_action = str(policy.get("default_action", "deny"))
         toolkit = self._import_toolkit()
         self.engine = None
         self.audit = []
@@ -108,32 +113,46 @@ class ToolkitGovernanceAdapter:
         def rule(condition: str, default: str | None) -> str | None:
             return self.rule_names.get(condition, default)
 
+        def configured_action(condition: str, default: str) -> str:
+            return self.rule_actions.get(condition, default)
+
         if stage == "pre_tool":
-            allowed = authorized
-            result = "allow" if allowed else "deny"
-            matched_rule = rule("action.authorized", "allow-authorized-agent-step") if allowed else None
+            condition = "action.authorized"
+            result = configured_action(condition, "allow") if authorized else self.default_action
+            allowed = result == "allow"
+            matched_rule = rule(condition, "allow-authorized-agent-step") if authorized else None
         elif action.get("status") == "unauthorized":
-            allowed, result = False, "deny"
-            matched_rule = rule("action.status == 'unauthorized'", "deny-unauthorized-final-action")
+            condition = "action.status == 'unauthorized'"
+            result = configured_action(condition, "deny")
+            allowed = result == "allow"
+            matched_rule = rule(condition, "deny-unauthorized-final-action")
         elif governance.get("status") == "conflict":
-            allowed, result = False, "require_approval"
-            matched_rule = rule("governance.status == 'conflict'", "require-review-for-unreconciled-conflict")
+            condition = "governance.status == 'conflict'"
+            result = configured_action(condition, "require_approval")
+            allowed = result == "allow"
+            matched_rule = rule(condition, "require-review-for-unreconciled-conflict")
         elif governance.get("status") == "failed":
-            allowed, result = False, "deny"
-            matched_rule = rule("governance.status == 'failed'", "deny-incorrect-record-relative-result")
+            condition = "governance.status == 'failed'"
+            result = configured_action(condition, "deny")
+            allowed = result == "allow"
+            matched_rule = rule(condition, "deny-incorrect-record-relative-result")
         elif nemo.get("status") == "flagged":
-            allowed, result = False, "require_approval"
-            matched_rule = rule("nemo.status == 'flagged'", "require-review-for-nemo-content-flag")
+            condition = "nemo.status == 'flagged'"
+            result = configured_action(condition, "require_approval")
+            allowed = result == "allow"
+            matched_rule = rule(condition, "require-review-for-nemo-content-flag")
         elif nemo.get("status") in {"passed", "unavailable"} and governance.get("status") == "passed" and authorized:
-            allowed, result = True, "allow"
             if nemo.get("status") == "passed":
                 condition = "action.status == 'authorized' and governance.status == 'passed' and nemo.status == 'passed'"
                 matched_rule = rule(condition, "allow-verified-action")
             else:
                 condition = "action.status == 'authorized' and governance.status == 'passed' and nemo.status == 'unavailable'"
                 matched_rule = rule(condition, "allow-verified-action-with-nemo-unavailable")
+            result = configured_action(condition, "allow")
+            allowed = result == "allow"
         else:
-            allowed, result, matched_rule = False, "deny", None
+            result = self.default_action
+            allowed, matched_rule = result == "allow", None
 
         return SimpleNamespace(
             allowed=allowed, action=result, matched_rule=matched_rule,

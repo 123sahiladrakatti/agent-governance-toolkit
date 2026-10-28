@@ -1,5 +1,5 @@
 
-"""Runtime agent governance framework demo, with AML plugged in as the example pipeline.
+"""Runtime governance demo with swappable AML and healthcare client pipelines.
 
 Run: streamlit run app.py
 """
@@ -13,9 +13,9 @@ from pathlib import Path
 
 import streamlit as st
 
-from agent_sim import DISPOSITION_AGENT, SANCTIONS_AGENT
 from agt_resolver import GraphGovernor
 from aml.client_payload import AML_RECORD_CODECS, simulate_aml_case
+from aml.correctness import AmlCorrectnessComponent
 from client_pipeline import (
     ClientPipelineError,
     compose_client_payload,
@@ -29,6 +29,13 @@ from domain import (
     Transaction,
 )
 from graph_integrity import check_graph_integrity
+from healthcare.client_payload import (
+    HEALTHCARE_RECORD_CODECS,
+    allergy_finding,
+    simulate_healthcare_case,
+)
+from healthcare.correctness import HealthcareCorrectnessComponent
+from healthcare.system import HealthcareCase, MEDICATION_ALLERGENS
 
 
 st.set_page_config(page_title="Runtime Agent Governance", page_icon="◆", layout="wide")
@@ -116,12 +123,12 @@ def normalize_date(value: object) -> datetime:
 
 
 st.markdown(
-    '<div class="hero"><div class="kicker">GOVERNANCE FRAMEWORK · AML SHOWN AS AN EXAMPLE PIPELINE</div>'
+    '<div class="hero"><div class="kicker">GOVERNANCE FRAMEWORK · AML + HEALTHCARE REFERENCE PIPELINES</div>'
     '<h1>Runtime governance for any agentic pipeline.</h1>'
     '<p>This is a domain-agnostic runtime governance framework. It runs the same generic checks on any '
     'multi-agent pipeline: deterministic authorization, trace integrity, content monitoring, an optional '
     'correctness plug-in, and an Action Governance gate that makes the final decision, with attribution and audit. '
-    'Anti-money-laundering (AML) is the example pipeline plugged in here to make it concrete.</p></div>',
+    'AML and healthcare are two swappable reference pipelines plugged in here to make it concrete.</p></div>',
     unsafe_allow_html=True,
 )
 
@@ -144,16 +151,40 @@ stage_html = "".join(
 st.markdown(
     f'<div class="stages">{stage_html}</div>'
     '<div class="plugin-row">'
-    '<div class="plug"><span class="tag plug">AML PLUG-IN</span><b>Swappable domain pieces:</b> '
-    'the AML example pipeline (sends client-pipeline JSON to stage 1) and the AML correctness component (fills stage 5).</div>'
-    '<div class="note">Swap the AML pipeline and correctness component for any domain; '
+    '<div class="plug"><span class="tag plug">DOMAIN PLUG-IN</span><b>Swappable domain pieces:</b> '
+    'the client pipeline (sends client-pipeline JSON to stage 1) and its optional correctness component (fills stage 5).</div>'
+    '<div class="note">Switch between the AML and healthcare companies below—or supply another domain; '
     'the governance stages stay the same.</div>'
     '</div>',
     unsafe_allow_html=True,
 )
 
 # --------------------------------------------------------------------------- the client pipeline (static definition)
-PIPELINE_PATH = Path(__file__).parent / "client_pipelines" / "aml_pipeline.json"
+REFERENCE_PIPELINES = {
+    "Healthcare": {
+        "path": Path(__file__).parent / "client_pipelines" / "healthcare_pipeline.json",
+        "label": "HEALTHCARE PLUG-IN",
+        "description": "patient intake, allergy safety, medication, coverage, and care decision",
+    },
+    "AML": {
+        "path": Path(__file__).parent / "client_pipelines" / "aml_pipeline.json",
+        "label": "AML PLUG-IN",
+        "description": "alert intake, screening, transactions, KYC, and disposition",
+    },
+}
+
+st.markdown('<p class="section-label">REFERENCE PIPELINE</p>', unsafe_allow_html=True)
+selected_reference = st.selectbox(
+    "Choose the company pipeline to ingest in the backend",
+    tuple(REFERENCE_PIPELINES),
+    help=(
+        "The selection changes the client-supplied agents, topology, permissions, policies, "
+        "record codec, simulator, and correctness component. The governance framework does not change."
+    ),
+)
+reference = REFERENCE_PIPELINES[selected_reference]
+PIPELINE_PATH = reference["path"]
+plugin_label = reference["label"]
 
 st.markdown('<p class="section-label">THE CLIENT PIPELINE · STATIC DEFINITION</p>', unsafe_allow_html=True)
 try:
@@ -198,125 +229,166 @@ with st.expander("Client policies and raw definition", expanded=False):
 
 # --------------------------------------------------------------------------- live case (dynamic)
 st.markdown('<p class="section-label">LIVE CASE · ENTERED NOW</p>', unsafe_allow_html=True)
-st.markdown('<h2 class="section-title">Run a live AML case through the client pipeline</h2>', unsafe_allow_html=True)
 st.markdown(
-    '<p class="section-help example-frame">On submit, the client\'s AML agents (simulated here, since there is no '
-    'real client runtime) execute this case. Their run is combined with the loaded pipeline definition and the '
-    'framework governs it. The governance itself is domain-agnostic.</p>',
+    f'<h2 class="section-title">Run a live {esc(selected_reference)} case through the client pipeline</h2>',
     unsafe_allow_html=True,
 )
 st.markdown(
-    '<div class="watchlist"><b>Demo watchlist:</b> '
-    + ' &middot; '.join(f'<code>{esc(name)}</code>' for name in sorted(SANCTIONS_WATCHLIST))
-    + '<br>Use an exact watchlist name to demonstrate a new screening hit that the decision agent receives as stale state.</div>',
+    f'<p class="section-help example-frame">On submit, the selected company agents ({esc(reference["description"])}) '
+    'execute the case. Their run is combined with the backend pipeline definition and ingested into the same '
+    'normalized trace. The governance framework itself does not change by domain.</p>',
     unsafe_allow_html=True,
 )
-
-default_transactions = [
-    {"id": "T-001", "date": date(2026, 1, 5), "type": "cash_deposit", "amount": 2_500.0, "branch": "BR-01"},
-    {"id": "T-002", "date": date(2026, 1, 6), "type": "cash_deposit", "amount": 1_500.0, "branch": "BR-01"},
-]
-
-with st.form("aml-case-input"):
-    c1, c2 = st.columns(2)
-    with c1:
-        customer_name = st.text_input("Customer name", placeholder="Jane Smith")
-        account_id = st.text_input("Account ID", value="ACCT-DEMO-001")
-    with c2:
-        occupation = st.text_input("Occupation", value="business owner")
-        expected_cash = st.number_input(
-            "Expected monthly cash volume", min_value=0.0, value=8_000.0, step=500.0
+if selected_reference == "AML":
+    st.markdown(
+        '<div class="watchlist"><b>Demo watchlist:</b> '
+        + ' &middot; '.join(f'<code>{esc(name)}</code>' for name in sorted(SANCTIONS_WATCHLIST))
+        + '<br>Use an exact watchlist name to create a v2 hit while the final agent consumes stale v1 state.</div>',
+        unsafe_allow_html=True,
+    )
+    default_transactions = [
+        {"id": "T-001", "date": date(2026, 1, 5), "type": "cash_deposit", "amount": 2_500.0, "branch": "BR-01"},
+        {"id": "T-002", "date": date(2026, 1, 6), "type": "cash_deposit", "amount": 1_500.0, "branch": "BR-01"},
+    ]
+    with st.form("aml-case-input"):
+        c1, c2 = st.columns(2)
+        with c1:
+            customer_name = st.text_input("Customer name", placeholder="Jane Smith")
+            account_id = st.text_input("Account ID", value="ACCT-DEMO-001")
+        with c2:
+            occupation = st.text_input("Occupation", value="business owner")
+            expected_cash = st.number_input(
+                "Expected monthly cash volume", min_value=0.0, value=8_000.0, step=500.0
+            )
+        monitoring_rule = st.text_input(
+            "Monitoring rule", value="customer and transaction activity review"
         )
-    monitoring_rule = st.text_input(
-        "Monitoring rule", value="customer and transaction activity review"
+        edited_transactions = st.data_editor(
+            default_transactions,
+            num_rows="dynamic",
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "id": st.column_config.TextColumn("Transaction ID", required=True),
+                "date": st.column_config.DateColumn("Date", required=True),
+                "type": st.column_config.SelectboxColumn(
+                    "Type", options=["cash_deposit", "wire", "card_payment", "cash_withdrawal"], required=True
+                ),
+                "amount": st.column_config.NumberColumn("Amount", min_value=0.01, format="$%.2f", required=True),
+                "branch": st.column_config.TextColumn("Branch", required=True),
+            },
+        )
+        submitted = st.form_submit_button(
+            "Run live case through the AML pipeline", type="primary", width="stretch"
+        )
+else:
+    examples = " &middot; ".join(
+        f'<code>{esc(medication)} → {esc(allergen)}</code>'
+        for medication, allergen in MEDICATION_ALLERGENS.items()
     )
-    edited_transactions = st.data_editor(
-        default_transactions,
-        num_rows="dynamic",
-        hide_index=True,
-        width="stretch",
-        column_config={
-            "id": st.column_config.TextColumn("Transaction ID", required=True),
-            "date": st.column_config.DateColumn("Date", required=True),
-            "type": st.column_config.SelectboxColumn(
-                "Type", options=["cash_deposit", "wire", "card_payment", "cash_withdrawal"], required=True
-            ),
-            "amount": st.column_config.NumberColumn("Amount", min_value=0.01, format="$%.2f", required=True),
-            "branch": st.column_config.TextColumn("Branch", required=True),
-        },
+    st.markdown(
+        '<div class="watchlist"><b>Healthcare safety examples:</b> ' + examples
+        + '<br>Choose a medication and matching known allergy to create a current v2 contraindication '
+        'that the final care agent receives as stale v1 context. Use synthetic data only.</div>',
+        unsafe_allow_html=True,
     )
-    submitted = st.form_submit_button(
-        "Run live case through the client pipeline", type="primary", width="stretch"
-    )
+    with st.form("healthcare-case-input"):
+        c1, c2 = st.columns(2)
+        with c1:
+            patient_name = st.text_input("Patient name", value="Alex Morgan")
+            patient_id = st.text_input("Patient ID", value="PAT-DEMO-001")
+            patient_age = st.number_input("Age", min_value=0, max_value=120, value=45)
+            diagnosis = st.text_input("Diagnosis / care reason", value="bacterial infection")
+        with c2:
+            medication = st.selectbox(
+                "Medication order", ["Acetaminophen", *MEDICATION_ALLERGENS.keys()]
+            )
+            known_allergy = st.selectbox(
+                "Known allergy", ["none", "penicillin", "cephalosporin", "NSAID"]
+            )
+            coverage_authorized = st.checkbox("Coverage / prior authorization confirmed", value=True)
+        submitted = st.form_submit_button(
+            "Run live case through the healthcare pipeline", type="primary", width="stretch"
+        )
 
 if submitted:
-    st.session_state.pop("aml_review", None)
+    st.session_state.pop("governance_review", None)
     try:
-        if not customer_name.strip():
-            raise ValueError("Customer name is required")
-        if not account_id.strip():
-            raise ValueError("Account ID is required")
-        if not occupation.strip():
-            raise ValueError("Occupation is required for this reference run")
-        rows = (
-            edited_transactions.to_dict("records")
-            if hasattr(edited_transactions, "to_dict") else list(edited_transactions)
-        )
-        if not rows:
-            raise ValueError("Add at least one transaction")
-        transactions = tuple(
-            Transaction(
-                id=str(row["id"]),
-                account_id=account_id.strip(),
-                amount=float(row["amount"]),
-                type=str(row["type"]),
-                timestamp=normalize_date(row["date"]),
-                branch=str(row["branch"]),
+        if selected_reference == "AML":
+            if not customer_name.strip() or not account_id.strip() or not occupation.strip():
+                raise ValueError("Customer name, account ID, and occupation are required")
+            rows = (
+                edited_transactions.to_dict("records")
+                if hasattr(edited_transactions, "to_dict") else list(edited_transactions)
             )
-            for row in rows
+            if not rows:
+                raise ValueError("Add at least one transaction")
+            transactions = tuple(
+                Transaction(
+                    id=str(row["id"]), account_id=account_id.strip(), amount=float(row["amount"]),
+                    type=str(row["type"]), timestamp=normalize_date(row["date"]), branch=str(row["branch"]),
+                )
+                for row in rows
+            )
+            customer = CustomerProfile(
+                account_id.strip(), customer_name.strip(), occupation.strip(), float(expected_cash)
+            )
+            domain_records = Alert(
+                "AML-INTERACTIVE", account_id.strip(), transactions, customer, monitoring_rule.strip()
+            )
+            stale_view = customer.name in SANCTIONS_WATCHLIST
+            case_run, case_records = simulate_aml_case(domain_records, stale_screening_view=stale_view)
+            codecs = AML_RECORD_CODECS
+            correctness_component = AmlCorrectnessComponent()
+            subject_label, subject_value = "Customer", customer.name
+        else:
+            if not patient_name.strip() or not patient_id.strip() or not diagnosis.strip():
+                raise ValueError("Patient name, patient ID, and diagnosis are required")
+            domain_records = HealthcareCase(
+                "HC-INTERACTIVE", patient_id.strip(), patient_name.strip(), int(patient_age),
+                diagnosis.strip(), medication, known_allergy, bool(coverage_authorized)
+            )
+            stale_view = allergy_finding(domain_records)[1]
+            case_run, case_records = simulate_healthcare_case(
+                domain_records, stale_allergy_view=stale_view
+            )
+            codecs = HEALTHCARE_RECORD_CODECS
+            correctness_component = HealthcareCorrectnessComponent()
+            subject_label, subject_value = "Patient", domain_records.patient_name
+
+        progress = st.progress(
+            10, text=f"Client pipeline: {selected_reference} agents are running the live case"
         )
-        customer = CustomerProfile(
-            account_id=account_id.strip(),
-            name=customer_name.strip(),
-            stated_occupation=occupation.strip(),
-            expected_monthly_cash_volume=float(expected_cash),
-        )
-        alert = Alert(
-            alert_id="AML-INTERACTIVE",
-            account_id=account_id.strip(),
-            transactions=transactions,
-            customer=customer,
-            monitoring_rule=monitoring_rule.strip(),
-        )
-        watchlist_hit = customer.name in SANCTIONS_WATCHLIST
-        progress = st.progress(10, text="Client pipeline: simulated AML agents are running the live case")
-        # The client side: its agents execute this case, producing only a run and its records.
-        case_run, case_records = simulate_aml_case(alert, stale_screening_view=watchlist_hit)
-        # Pipeline definition (from the client's file) + this case's run = the governed payload.
         payload_json = json.dumps(
             compose_client_payload(pipeline_definition, case_run, case_records), indent=2
         )
         progress.progress(30, text="Framework: ingesting the client-pipeline JSON")
-        # The framework side: everything below is derived only from the ingested JSON.
-        ingested = ingest_client_pipeline(payload_json, AML_RECORD_CODECS)
+        ingested = ingest_client_pipeline(payload_json, codecs)
         outcome = ingested.outcome
         policy_overrides = {
             key: value for key, value in (
                 ("graph_policy", ingested.graph_policy), ("action_policy", ingested.action_policy)
             ) if value is not None
         }
-        # Permissions and policies come from the loaded definition, via the ingested payload.
-        governor = GraphGovernor(system_description=ingested.description, **policy_overrides)
+        governor = GraphGovernor(
+            system_description=ingested.description,
+            correctness_component=correctness_component,
+            **policy_overrides,
+        )
         progress.progress(45, text="Framework: running authorization, trace, NeMo, and correctness checks")
         review = governor.review(outcome)
         progress.progress(85, text="Framework: Action Governance is combining signals")
-        st.session_state.aml_review = {
+        st.session_state.governance_review = {
+            "domain": selected_reference,
+            "plugin_label": plugin_label,
             "review": review,
             "integrity": check_graph_integrity(outcome),
             "agt_live": governor.agt_live,
             "payload_json": payload_json,
             "pipeline_file": PIPELINE_PATH.name,
-            "customer": customer.name,
+            "subject_label": subject_label,
+            "subject_value": subject_value,
+            "final_agent": ingested.description.final_agent,
         }
         progress.progress(100, text="Governance decision complete")
         progress.empty()
@@ -325,18 +397,32 @@ if submitted:
     except (KeyError, TypeError, ValueError) as exc:
         st.error(f"The case could not be processed: {exc}")
 
-result = st.session_state.get("aml_review")
-if result is None:
+result = st.session_state.get("governance_review")
+if result is None or result["domain"] != selected_reference:
     st.info("Enter a live case above to run it through the loaded client pipeline.")
     st.stop()
 
 review = result["review"]
 integrity = result["integrity"]
 steps = {step.agent: step for step in review.outcome.steps}
-screening = steps[SANCTIONS_AGENT]
-decision = steps[DISPOSITION_AGENT]
-consumed_finding = decision.received_findings_by_parent[SANCTIONS_AGENT]
-consumed_version = decision.received_versions_by_parent[SANCTIONS_AGENT]
+decision = steps[result["final_agent"]]
+consumer = steps.get(integrity.origin_agent, decision)
+conflict_parents = (
+    *integrity.stale_parents,
+    *integrity.altered_parents,
+    *integrity.future_version_parents,
+    *integrity.missing_parents,
+)
+conflict_parent = next((parent for parent in conflict_parents if parent in steps), None)
+producer = steps.get(conflict_parent) if conflict_parent else None
+consumed_finding = (
+    consumer.received_findings_by_parent.get(conflict_parent, "missing")
+    if conflict_parent else "not applicable"
+)
+consumed_version = (
+    consumer.received_versions_by_parent.get(conflict_parent, "missing")
+    if conflict_parent else "not applicable"
+)
 action = str(review.policy_decision.get("action", "deny"))
 action_label = {"allow": "CONTINUE", "require_approval": "HUMAN REVIEW", "deny": "BLOCK"}.get(action, action.upper())
 verdict_css = {"allow": "continue", "require_approval": "review", "deny": "block"}.get(action, "block")
@@ -344,7 +430,7 @@ verdict_css = {"allow": "continue", "require_approval": "review", "deny": "block
 # --------------------------------------------------------------------------- ingested client payload
 st.markdown('<p class="section-label">GOVERNED PAYLOAD · DEFINITION + LIVE RUN</p>', unsafe_allow_html=True)
 st.markdown(
-    f'<p class="section-help">The framework governed the case for <b>{esc(result["customer"])}</b> flowing through '
+    f'<p class="section-help">The framework governed the case for <b>{esc(result["subject_value"])}</b> flowing through '
     f'the client\'s pipeline. <code>system</code> and <code>policy</code> come from '
     f'<code>{esc(result["pipeline_file"])}</code>; <code>run</code> and <code>records</code> come from this live '
     'case\'s simulated run. The governance below ran only on this ingested payload.</p>',
@@ -359,13 +445,13 @@ with st.expander(
 st.markdown('<p class="section-label">LIVE GOVERNANCE RUN</p>', unsafe_allow_html=True)
 st.markdown(
     '<p class="section-help"><span class="tag fw">FRAMEWORK</span>generic stages, identical for every pipeline '
-    '&nbsp;&nbsp;<span class="tag plug">AML PLUG-IN</span>the swappable domain pieces slotted into them.</p>',
+    f'&nbsp;&nbsp;<span class="tag plug">{esc(result["plugin_label"])}</span>the swappable domain pieces slotted into them.</p>',
     unsafe_allow_html=True,
 )
 FW, PLUG = "fw", "plug"
 events: list[tuple[str, str, str, str, str]] = [
-    (PLUG, "Client agents run case (AML)", "RAN", "pass",
-     f"Simulated AML agents executed the live case through {result['pipeline_file']}'s topology."),
+    (PLUG, f"Client agents run case ({result['domain']})", "RAN", "pass",
+     f"Simulated {result['domain']} agents executed the live case through {result['pipeline_file']}'s topology."),
     (FW, "JSON ingestion", "PASS", "pass",
      f"Definition + live run validated into a PipelineTrace of {len(review.outcome.steps)} agent steps; "
      f"permissions and policies taken from {result['pipeline_file']}."),
@@ -391,7 +477,7 @@ for check in review.content_checks:
         status, css = "PASS", "pass"
     events.append((FW, f"NeMo content · {check['agent']}", status, css, str(check["reason"])))
 events.append((
-    PLUG, "Correctness plug-in (AML)",
+    PLUG, f"Correctness plug-in ({result['domain']})",
     "PASS" if review.attribution.passed else "FLAG",
     "pass" if review.attribution.passed else "review",
     review.attribution.reason,
@@ -404,7 +490,7 @@ events.append((
 
 event_html = "".join(
     f'<div class="event {css}"><span class="dot"></span><span class="phase">'
-    f'<span class="tag {layer}">{"FRAMEWORK" if layer == FW else "AML PLUG-IN"}</span>{esc(phase)}</span>'
+    f'<span class="tag {layer}">{"FRAMEWORK" if layer == FW else esc(result["plugin_label"])}</span>{esc(phase)}</span>'
     f'<span class="status">{esc(status)}</span><span class="detail">{esc(detail)}</span></div>'
     for layer, phase, status, css, detail in events
 )
@@ -427,15 +513,16 @@ st.markdown(
 if integrity.passed:
     st.success("Framework trace integrity: no conflict. The screening and decision agents used consistent state.")
 else:
-    st.markdown(
-        f'<div class="state-compare">'
-        f'<div class="state-card"><small>{esc(screening.agent)} emitted</small>'
-        f'<strong>{esc(screening.finding)} · version {screening.finding_version}</strong></div>'
-        f'<div class="state-card stale"><small>{esc(decision.agent)} consumed</small>'
-        f'<strong>{esc(consumed_finding)} · version {consumed_version}</strong></div>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
+    if producer is not None:
+        st.markdown(
+            f'<div class="state-compare">'
+            f'<div class="state-card"><small>{esc(producer.agent)} emitted</small>'
+            f'<strong>{esc(producer.finding)} · version {producer.finding_version}</strong></div>'
+            f'<div class="state-card stale"><small>{esc(consumer.agent)} consumed</small>'
+            f'<strong>{esc(consumed_finding)} · version {esc(consumed_version)}</strong></div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
 origin = (
     f"{review.attribution.origin_node or '-'} · {review.attribution.origin_agent}"
@@ -447,7 +534,7 @@ st.markdown(
     f'<p><b>Why:</b> {esc(review.attribution.reason)}</p>'
     f'<p><b>Policy result:</b> {esc(str(review.policy_decision.get("reason", "")))}</p>'
     f'<div class="why-grid">'
-    f'<div><small>Customer</small><strong>{esc(review.outcome.alert.customer.name)}</strong></div>'
+    f'<div><small>{esc(result["subject_label"])}</small><strong>{esc(result["subject_value"])}</strong></div>'
     f'<div><small>Agent disposition</small><strong>{esc(decision.disposition)}</strong></div>'
     f'<div><small>Attributed to</small><strong>{esc(origin)}</strong></div>'
     f'<div><small>Category</small><strong>{esc(review.attribution.category or "none")}</strong></div>'
