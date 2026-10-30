@@ -27,6 +27,20 @@ HEALTHCARE_RECORD_CODECS: dict[str, RecordCodec] = {
     HEALTHCARE_SYSTEM_DESCRIPTION.schema: (encode_healthcare_case, decode_healthcare_case),
 }
 
+try:
+    # The healthcare agents run as a LangGraph StateGraph (deterministic nodes, no LLM).
+    import langgraph.graph  # noqa: F401
+
+    HEALTHCARE_RUN_ENGINE = "langgraph"
+except ImportError:  # langgraph not installed: fall back to the hand-rolled reference steps
+    HEALTHCARE_RUN_ENGINE = "build_healthcare_steps"
+
+# Deterministic branch outputs shared by the reference steps and the LangGraph nodes.
+INTAKE_FINDING = "care-request-routed"
+MEDICATION_FINDING = "medication-order-validated"
+# The case-state allergy entry before the safety agent's update (version 1).
+PRIOR_ALLERGY_STATE = {"finding": "no-contraindication", "version": 1}
+
 
 def allergy_finding(case: HealthcareCase) -> tuple[str, bool]:
     allergen = MEDICATION_ALLERGENS.get(case.medication)
@@ -42,11 +56,28 @@ def expected_disposition(case: HealthcareCase) -> str:
     return "APPROVE_TREATMENT"
 
 
-def simulate_healthcare_case(
+def allergy_version(flagged: bool) -> int:
+    return 2 if flagged else 1
+
+
+def coverage_finding(case: HealthcareCase) -> str:
+    return "authorized" if case.coverage_authorized else "not-authorized"
+
+
+def care_disposition(consumed_allergy: str, coverage: str) -> str:
+    """Care-decision merge rule applied to whatever allergy/coverage view the agent holds."""
+    if consumed_allergy == "contraindication":
+        return "HOLD_FOR_CLINICAL_REVIEW"
+    if coverage == "not-authorized":
+        return "HOLD_FOR_AUTHORIZATION"
+    return "APPROVE_TREATMENT"
+
+
+def build_healthcare_steps(
     case: HealthcareCase,
     stale_allergy_view: bool = False,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Run the reference healthcare agents and return observed run + records.
+) -> tuple[GraphStep, ...]:
+    """Hand-rolled reference run of the healthcare diamond (parity reference and fallback).
 
     When ``stale_allergy_view`` is true, the safety agent emits its current v2
     contraindication but the final agent consumes an earlier v1 no-hit result.
@@ -54,19 +85,14 @@ def simulate_healthcare_case(
     """
 
     allergy, allergy_flagged = allergy_finding(case)
-    allergy_version = 2 if allergy_flagged else 1
-    coverage = "authorized" if case.coverage_authorized else "not-authorized"
-    intake_finding = "care-request-routed"
-    medication_finding = "medication-order-validated"
+    current_allergy_version = allergy_version(allergy_flagged)
+    coverage = coverage_finding(case)
+    intake_finding = INTAKE_FINDING
+    medication_finding = MEDICATION_FINDING
 
-    consumed_allergy = "no-contraindication" if stale_allergy_view else allergy
-    consumed_allergy_version = 1 if stale_allergy_view else allergy_version
-    if consumed_allergy == "contraindication":
-        disposition = "HOLD_FOR_CLINICAL_REVIEW"
-    elif coverage == "not-authorized":
-        disposition = "HOLD_FOR_AUTHORIZATION"
-    else:
-        disposition = "APPROVE_TREATMENT"
+    consumed_allergy = PRIOR_ALLERGY_STATE["finding"] if stale_allergy_view else allergy
+    consumed_allergy_version = PRIOR_ALLERGY_STATE["version"] if stale_allergy_view else current_allergy_version
+    disposition = care_disposition(consumed_allergy, coverage)
 
     def step(agent: str, action: str, finding: str, flagged: bool = False, **kwargs) -> GraphStep:
         return GraphStep(
@@ -84,7 +110,7 @@ def simulate_healthcare_case(
     steps = (
         step(INTAKE_AGENT, "route_care_request", intake_finding),
         step(ALLERGY_AGENT, "evaluate_allergy_safety", allergy, allergy_flagged,
-             finding_version=allergy_version),
+             finding_version=current_allergy_version),
         step(MEDICATION_AGENT, "validate_medication_order", medication_finding),
         step(COVERAGE_AGENT, "verify_coverage", coverage, not case.coverage_authorized),
         step(
@@ -105,13 +131,32 @@ def simulate_healthcare_case(
             },
         ),
     )
+    return steps
+
+
+def simulate_healthcare_case(
+    case: HealthcareCase,
+    stale_allergy_view: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Run the healthcare agents on one live case and return observed run + records."""
+
+    if HEALTHCARE_RUN_ENGINE == "langgraph":
+        from healthcare.langgraph_pipeline import build_langgraph_healthcare_steps as run_pipeline
+    else:
+        run_pipeline = build_healthcare_steps
+    steps = run_pipeline(case, stale_allergy_view=stale_allergy_view)
     run = run_to_json(steps, run_id=case.case_id, resource_id=f"healthcare-case:{case.case_id}")
     return run, encode_healthcare_case(case)
 
 
 __all__ = [
     "HEALTHCARE_RECORD_CODECS",
+    "HEALTHCARE_RUN_ENGINE",
+    "PRIOR_ALLERGY_STATE",
     "allergy_finding",
+    "build_healthcare_steps",
+    "care_disposition",
+    "coverage_finding",
     "expected_disposition",
     "simulate_healthcare_case",
 ]

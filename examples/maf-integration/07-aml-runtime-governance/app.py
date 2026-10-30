@@ -15,7 +15,7 @@ import pandas as pd
 import streamlit as st
 
 from agt_resolver import GraphGovernor
-from aml.client_payload import AML_RECORD_CODECS, simulate_aml_case
+from aml.client_payload import AML_RECORD_CODECS, AML_RUN_ENGINE, simulate_aml_case
 from aml.correctness import AmlCorrectnessComponent
 from client_pipeline import (
     ClientPipelineError,
@@ -31,6 +31,7 @@ from domain import (
 )
 from graph_integrity import check_graph_integrity
 from healthcare.client_payload import (
+    HEALTHCARE_RUN_ENGINE,
     HEALTHCARE_RECORD_CODECS,
     allergy_finding,
     simulate_healthcare_case,
@@ -90,6 +91,7 @@ html,body,[class*="css"] { font-family:ui-sans-serif,system-ui,-apple-system,Bli
 .pill { display:inline-block; padding:.2rem .5rem; font:700 .72rem ui-monospace,SFMono-Regular,Menlo,monospace; }
 .pill.live { color:var(--green); background:var(--green-bg); border:1px solid #b7dcc6; }
 .pill.fallback { color:var(--gold); background:var(--amber-bg); border:1px solid #ecd9ad; }
+.pill + .pill { margin-left:.4rem; }
 .stages { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:.5rem; }
 .stage { border:1px solid #bcd3e4; background:var(--blue-bg); padding:.7rem .75rem; font-size:.82rem; line-height:1.4; }
 .stage .num { font:700 .7rem ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--blue); }
@@ -243,6 +245,16 @@ st.markdown(
     'normalized trace. The governance framework itself does not change by domain.</p>',
     unsafe_allow_html=True,
 )
+# Which engine executes the client agents for this run: LangGraph, or the hand-rolled fallback.
+run_engine = AML_RUN_ENGINE if selected_reference == "AML" else HEALTHCARE_RUN_ENGINE
+run_engine_fallback = run_engine != "langgraph"
+if run_engine_fallback:
+    st.warning(
+        f"Pipeline engine: {run_engine} (FALLBACK) - LangGraph is not installed, so the hand-rolled "
+        f"reference pipeline runs the {selected_reference} agents instead of the LangGraph StateGraph."
+    )
+else:
+    st.caption("Pipeline engine: langgraph (LangGraph StateGraph, deterministic agent nodes)")
 if selected_reference == "AML":
     st.markdown(
         '<div class="watchlist"><b>Demo watchlist:</b> '
@@ -411,6 +423,8 @@ if submitted:
             "subject_label": subject_label,
             "subject_value": subject_value,
             "final_agent": ingested.description.final_agent,
+            "run_engine": run_engine,
+            "run_engine_fallback": run_engine_fallback,
         }
         progress.progress(100, text="Governance decision complete")
         progress.empty()
@@ -473,7 +487,8 @@ st.markdown(
 FW, PLUG = "fw", "plug"
 events: list[tuple[str, str, str, str, str]] = [
     (PLUG, f"Client agents run case ({result['domain']})", "RAN", "pass",
-     f"Simulated {result['domain']} agents executed the live case through the client pipeline's topology."),
+     f"Simulated {result['domain']} agents executed the live case through the client pipeline's topology "
+     f"(engine: {result['run_engine']}{', FALLBACK' if result['run_engine_fallback'] else ''})."),
     (FW, "JSON ingestion", "PASS", "pass",
      f"Definition + live run validated into a PipelineTrace of {len(review.outcome.steps)} agent steps; "
      "permissions and policies taken from the client pipeline definition."),
@@ -519,6 +534,10 @@ event_html = "".join(
 engine_pill = (
     '<span class="pill live">AGT LIVE</span>' if result["agt_live"]
     else '<span class="pill fallback">AGT FALLBACK</span>'
+) + (
+    f'<span class="pill fallback">PIPELINE ENGINE: {esc(result["run_engine"]).upper()} (FALLBACK)</span>'
+    if result["run_engine_fallback"]
+    else f'<span class="pill live">PIPELINE ENGINE: {esc(result["run_engine"]).upper()}</span>'
 )
 st.markdown(
     f'<div class="simulator">{engine_pill}{event_html}</div>',

@@ -23,6 +23,16 @@ from aml.system import (
 from client_pipeline import RecordCodec, run_to_json, to_client_json
 from domain import Alert
 
+try:
+    # The AML agents run as a LangGraph StateGraph (deterministic nodes, no LLM).
+    from aml.langgraph_pipeline import build_langgraph_diamond as _run_pipeline
+
+    AML_RUN_ENGINE = "langgraph"
+except ImportError:  # langgraph not installed: fall back to the hand-rolled reference diamond
+    from agent_sim import build_diamond as _run_pipeline
+
+    AML_RUN_ENGINE = "build_diamond"
+
 AML_ROLES = {
     TRIAGE_AGENT: "Routes the alert to the screening, transaction, and KYC branches",
     SANCTIONS_AGENT: "Screens the customer against the watchlist",
@@ -40,9 +50,7 @@ AML_RECORD_CODECS: dict[str, RecordCodec] = {
 def simulate_aml_case(alert: Alert, stale_screening_view: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run the simulated AML agents on one live case; return its ``(run, records)``."""
 
-    from agent_sim import build_diamond
-
-    steps = build_diamond(alert, stale_screening_view=stale_screening_view)
+    steps = _run_pipeline(alert, stale_screening_view=stale_screening_view)
     run = run_to_json(steps, run_id=alert.alert_id, resource_id=f"aml-alert:{alert.alert_id}")
     return run, encode_alert(alert)
 
@@ -50,9 +58,7 @@ def simulate_aml_case(alert: Alert, stale_screening_view: bool = False) -> tuple
 def build_aml_client_payload(alert: Alert, stale_screening_view: bool = False) -> dict[str, Any]:
     """Run the AML example agents and return the client-pipeline JSON they would send."""
 
-    from agent_sim import build_diamond
-
-    steps = build_diamond(alert, stale_screening_view=stale_screening_view)
+    steps = _run_pipeline(alert, stale_screening_view=stale_screening_view)
     return to_client_json(
         AML_SYSTEM_DESCRIPTION,
         steps,
@@ -63,4 +69,4 @@ def build_aml_client_payload(alert: Alert, stale_screening_view: bool = False) -
     )
 
 
-__all__ = ["AML_RECORD_CODECS", "AML_ROLES", "build_aml_client_payload", "simulate_aml_case"]
+__all__ = ["AML_RECORD_CODECS", "AML_ROLES", "AML_RUN_ENGINE", "build_aml_client_payload", "simulate_aml_case"]

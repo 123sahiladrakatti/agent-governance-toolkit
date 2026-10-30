@@ -1,3 +1,4 @@
 streamlit==1.50.0
 agent-governance-toolkit-core>=5.0,<6.0
 nemoguardrails==0.24.1
+langgraph>=1.0,<2.0
