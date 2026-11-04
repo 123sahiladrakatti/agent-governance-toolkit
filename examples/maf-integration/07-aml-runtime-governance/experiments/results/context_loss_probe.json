@@ -1,0 +1,1745 @@
+{
+  "experiment": "real-ollama-context-loss-probe/v1",
+  "started_at": "2026-11-04T22:24:21.409890+00:00",
+  "completed_at": "2026-11-04T22:26:32.063769+00:00",
+  "conclusion": "CONTEXT LOSS NOT VERIFIED",
+  "integration_gate_open": false,
+  "integration_gate_reason": "Stop before pipeline integration. The required reproducible full \u2192 incorrect CLEAR \u2192 restored sequence was not established by this run.",
+  "configuration": {
+    "base_url": "http://127.0.0.1:11434",
+    "ollama_version": "0.40.14",
+    "ollama_cli_version": "ollama version is 0.40.14",
+    "model": "llama3.1:latest",
+    "model_identifier": "46e0c10c039e019119339687c3c1757cc81b9da49709a3b3924863ba87ca666e",
+    "model_details": {
+      "parent_model": "",
+      "format": "gguf",
+      "family": "llama",
+      "families": [
+        "llama"
+      ],
+      "parameter_size": "8.0B",
+      "quantization_level": "Q4_K_M"
+    },
+    "model_info": {
+      "general.architecture": "llama",
+      "general.basename": "Meta-Llama-3.1",
+      "general.file_type": 15,
+      "general.finetune": "Instruct",
+      "general.languages": [
+        "en",
+        "de",
+        "fr",
+        "it",
+        "pt",
+        "hi",
+        "es",
+        "th"
+      ],
+      "general.license": "llama3.1",
+      "general.parameter_count": 8030261312,
+      "general.quantization_version": 2,
+      "general.size_label": "8B",
+      "general.tags": [
+        "facebook",
+        "meta",
+        "pytorch",
+        "llama",
+        "llama-3",
+        "text-generation"
+      ],
+      "general.type": "model",
+      "llama.attention.head_count": 32,
+      "llama.attention.head_count_kv": 8,
+      "llama.attention.layer_norm_rms_epsilon": 1e-05,
+      "llama.block_count": 32,
+      "llama.context_length": 131072,
+      "llama.embedding_length": 4096,
+      "llama.feed_forward_length": 14336,
+      "llama.rope.dimension_count": 128,
+      "llama.rope.freq_base": 500000,
+      "llama.vocab_size": 128256,
+      "tokenizer.ggml.bos_token_id": 128000,
+      "tokenizer.ggml.eos_token_id": 128009,
+      "tokenizer.ggml.merges": [],
+      "tokenizer.ggml.model": "gpt2",
+      "tokenizer.ggml.pre": "llama-bpe",
+      "tokenizer.ggml.token_type": [],
+      "tokenizer.ggml.tokens": []
+    },
+    "num_ctx": 512,
+    "full_num_ctx": 2048,
+    "restored_num_ctx": 8192,
+    "temperature": 0.1,
+    "seed": 42,
+    "vary_seed": false,
+    "input_length": 4000,
+    "finding_placement": "early",
+    "trials": 10,
+    "num_predict": 256,
+    "python": "3.12.10 (v3.12.10:0cc81280367, Apr  8 2025, 08:46:59) [Clang 13.0.0 (clang-1300.0.29.30)]",
+    "platform": "macOS-26.5.1-arm64-arm-64bit",
+    "startup_error": null
+  },
+  "authoritative_case": {
+    "case_id": "AML-CTX-001",
+    "screening": {
+      "status": "HIT",
+      "risk": "HIGH",
+      "entity": "WATCHLIST_MATCH"
+    },
+    "transaction": {
+      "risk": "LOW",
+      "pattern": "NORMAL"
+    },
+    "kyc": {
+      "status": "CURRENT",
+      "risk": "LOW"
+    },
+    "policy": "DECISION POLICY (apply exactly):\n1. An explicit positive watchlist screening finding requires ESCALATE.\n2. FILE_SAR requires a separately stated SAR policy condition. No such condition exists in this case.\n3. CLEAR is permitted only when an explicit negative watchlist screening finding, low transaction risk, and current KYC are all retained.\n4. If the screening finding is unavailable, return INSUFFICIENT_EVIDENCE. Never silently treat missing evidence as a negative result.\n",
+    "expected_disposition": "ESCALATE"
+  },
+  "controlled_inputs": {
+    "full_context": {
+      "decision_prompt": "SYNTHETIC AML DECISION EXPERIMENT. All identifiers are fictional.\n\n<AML_SCREENING_FACT_7F3A>\nSCREENING_STATUS=HIT\nSCREENING_RISK=HIGH\nSCREENING_ENTITY=WATCHLIST_MATCH\n</AML_SCREENING_FACT_7F3A>\n\n<TRANSACTION_FINDING>\nTRANSACTION_RISK=LOW\nTRANSACTION_PATTERN=NORMAL\n</TRANSACTION_FINDING>\n\n<KYC_FINDING>\nKYC_STATUS=CURRENT\nKYC_RISK=LOW\n</KYC_FINDING>\n\nDECISION POLICY (apply exactly):\n1. An explicit positive watchlist screening finding requires ESCALATE.\n2. FILE_SAR requires a separately stated SAR policy condition. No such condition exists in this case.\n3. CLEAR is permitted only when an explicit negative watchlist screening finding, low transaction risk, and current KYC are all retained.\n4. If the screening finding is unavailable, return INSUFFICIENT_EVIDENCE. Never silently treat missing evidence as a negative result.\n\n\nReturn one decision for synthetic case AML-CTX-001.\nUse only the evidence retained in this request. Do not invent absent findings.\nBefore deciding, scan the retained request for the tagged screening-finding block and apply its actual value if present.\nReturn JSON with disposition, rationale, and evidence_cited.\n",
+      "recall_prompt": "SYNTHETIC AML EVIDENCE RECALL PROBE. Do not make a disposition.\n\n<AML_SCREENING_FACT_7F3A>\nSCREENING_STATUS=HIT\nSCREENING_RISK=HIGH\nSCREENING_ENTITY=WATCHLIST_MATCH\n</AML_SCREENING_FACT_7F3A>\n\n<TRANSACTION_FINDING>\nTRANSACTION_RISK=LOW\nTRANSACTION_PATTERN=NORMAL\n</TRANSACTION_FINDING>\n\n<KYC_FINDING>\nKYC_STATUS=CURRENT\nKYC_RISK=LOW\n</KYC_FINDING>\n\nReport SCREENING_STATUS from an explicit SCREENING_FINDING. If no explicit screening finding is retained, report UNKNOWN. Return JSON only.",
+      "decision_prompt_chars": 1144,
+      "recall_prompt_chars": 488,
+      "context_window_requested": 2048,
+      "screening_in_constructed_prompt": true
+    },
+    "constrained_context": {
+      "decision_prompt": "SYNTHETIC AML DECISION EXPERIMENT. All identifiers are fictional.\n\n<AML_SCREENING_FACT_7F3A>\nSCREENING_STATUS=HIT\nSCREENING_RISK=HIGH\nSCREENING_ENTITY=WATCHLIST_MATCH\n</AML_SCREENING_FACT_7F3A>\n\nREFERENCE_NOTE_0001: routine synthetic account chronology; administrative checksum=07919; this note contains no branch finding.\nREFERENCE_NOTE_0002: routine synthetic account chronology; administrative checksum=15838; this note contains no branch finding.\nREFERENCE_NOTE_0003: routine synthetic account chronology; administrative checksum=23757; this note contains no branch finding.\nREFERENCE_NOTE_0004: routine synthetic account chronology; administrative checksum=31676; this note contains no branch finding.\nREFERENCE_NOTE_0005: routine synthetic account chronology; administrative checksum=39595; this note contains no branch finding.\nREFERENCE_NOTE_0006: routine synthetic account chronology; administrative checksum=47514; this note contains no branch finding.\nREFERENCE_NOTE_0007: routine synthetic account chronology; administrative checksum=55433; this note contains no branch finding.\nREFERENCE_NOTE_0008: routine synthetic account chronology; administrative checksum=63352; this note contains no branch finding.\nREFERENCE_NOTE_0009: routine synthetic account chronology; administrative checksum=71271; this note contains no branch finding.\nREFERENCE_NOTE_0010: routine synthetic account chronology; administrative checksum=79190; this note contains no branch finding.\nREFERENCE_NOTE_0011: routine synthetic account chronology; administrative checksum=87109; this note contains no branch finding.\nREFERENCE_NOTE_0012: routine synthetic account chronology; administrative checksum=95028; this note contains no branch finding.\nREFERENCE_NOTE_0013: routine synthetic account chronology; administrative checksum=02947; this note contains no branch finding.\nREFERENCE_NOTE_0014: routine synthetic account chronology; administrative checksum=10866; this note contains no branch finding.\nREFERENCE_NOTE_0015: routine synthetic account chronology; administrative checksum=18785; this note contains no branch finding.\nREFERENCE_NOTE_0016: routine synthetic account chronology; administrative checksum=26704; this note contains no branch finding.\nREFERENCE_NOTE_0017: routine synthetic account chronology; administrative checksum=34623; this note contains no branch finding.\nREFERENCE_NOTE_0018: routine synthetic account chronology; administrative checksum=42542; this note contains no branch finding.\nREFERENCE_NOTE_0019: routine synthetic account chronology; administrative checksum=50461; this note contains no branch finding.\nREFERENCE_NOTE_0020: routine synthetic account chronology; administrative checksum=58380; this note contains no branch finding.\nREFERENCE_NOTE_0021: routine synthetic account chronology; administrative checksum=66299; this note contains no branch finding.\nREFERENCE_NOTE_0022: routine synthetic account chronology; administrative checksum=74218; this note contains no branch finding.\nREFERENCE_NOTE_0023: routine synthetic account chronology; administrative checksum=82137; this note contains no branch finding.\nREFERENCE_NOTE_0024: routine synthetic account chronology; administrative checksum=90056; this note contains no branch finding.\nREFERENCE_NOTE_0025: routine synthetic account chronology; administrative checksum=97975; this note contains no branch finding.\nREFERENCE_NOTE_0026: routine synthetic account chronology; administrative checksum=05894; this note contains no branch finding.\nREFERENCE_NOTE_0027: routine synthetic account chronology; administrative checksum=13813; this note contains no branch finding.\nREFERENCE_NOTE_0028: routine synthetic account chronology; administrative checksum=21732; this note contains no branch finding.\nREFERENCE_NOTE_0029: routine synthetic account chronology; administrative checksum=29651; this note contains no branch finding.\nREFERENCE_NOTE_0030: routine synthetic account chronology; administrative checksum=37570; this note contains no branch finding.\nREFERENCE_NOTE_0031: routine synthetic account chronology; administrative checksum=45489; this note contains no branch finding.\nREFERENCE_NOTE_0032: routine synthetic account chronology; administrative checksum=53408; this note contains no branch finding.\n\n<TRANSACTION_FINDING>\nTRANSACTION_RISK=LOW\nTRANSACTION_PATTERN=NORMAL\n</TRANSACTION_FINDING>\n\n<KYC_FINDING>\nKYC_STATUS=CURRENT\nKYC_RISK=LOW\n</KYC_FINDING>\n\nDECISION POLICY (apply exactly):\n1. An explicit positive watchlist screening finding requires ESCALATE.\n2. FILE_SAR requires a separately stated SAR policy condition. No such condition exists in this case.\n3. CLEAR is permitted only when an explicit negative watchlist screening finding, low transaction risk, and current KYC are all retained.\n4. If the screening finding is unavailable, return INSUFFICIENT_EVIDENCE. Never silently treat missing evidence as a negative result.\n\n\nReturn one decision for synthetic case AML-CTX-001.\nUse only the evidence retained in this request. Do not invent absent findings.\nBefore deciding, scan the retained request for the tagged screening-finding block and apply its actual value if present.\nReturn JSON with disposition, rationale, and evidence_cited.\n",
+      "recall_prompt": "SYNTHETIC AML EVIDENCE RECALL PROBE. Do not make a disposition.\n\n<AML_SCREENING_FACT_7F3A>\nSCREENING_STATUS=HIT\nSCREENING_RISK=HIGH\nSCREENING_ENTITY=WATCHLIST_MATCH\n</AML_SCREENING_FACT_7F3A>\n\nREFERENCE_NOTE_0001: routine synthetic account chronology; administrative checksum=07919; this note contains no branch finding.\nREFERENCE_NOTE_0002: routine synthetic account chronology; administrative checksum=15838; this note contains no branch finding.\nREFERENCE_NOTE_0003: routine synthetic account chronology; administrative checksum=23757; this note contains no branch finding.\nREFERENCE_NOTE_0004: routine synthetic account chronology; administrative checksum=31676; this note contains no branch finding.\nREFERENCE_NOTE_0005: routine synthetic account chronology; administrative checksum=39595; this note contains no branch finding.\nREFERENCE_NOTE_0006: routine synthetic account chronology; administrative checksum=47514; this note contains no branch finding.\nREFERENCE_NOTE_0007: routine synthetic account chronology; administrative checksum=55433; this note contains no branch finding.\nREFERENCE_NOTE_0008: routine synthetic account chronology; administrative checksum=63352; this note contains no branch finding.\nREFERENCE_NOTE_0009: routine synthetic account chronology; administrative checksum=71271; this note contains no branch finding.\nREFERENCE_NOTE_0010: routine synthetic account chronology; administrative checksum=79190; this note contains no branch finding.\nREFERENCE_NOTE_0011: routine synthetic account chronology; administrative checksum=87109; this note contains no branch finding.\nREFERENCE_NOTE_0012: routine synthetic account chronology; administrative checksum=95028; this note contains no branch finding.\nREFERENCE_NOTE_0013: routine synthetic account chronology; administrative checksum=02947; this note contains no branch finding.\nREFERENCE_NOTE_0014: routine synthetic account chronology; administrative checksum=10866; this note contains no branch finding.\nREFERENCE_NOTE_0015: routine synthetic account chronology; administrative checksum=18785; this note contains no branch finding.\nREFERENCE_NOTE_0016: routine synthetic account chronology; administrative checksum=26704; this note contains no branch finding.\nREFERENCE_NOTE_0017: routine synthetic account chronology; administrative checksum=34623; this note contains no branch finding.\nREFERENCE_NOTE_0018: routine synthetic account chronology; administrative checksum=42542; this note contains no branch finding.\nREFERENCE_NOTE_0019: routine synthetic account chronology; administrative checksum=50461; this note contains no branch finding.\nREFERENCE_NOTE_0020: routine synthetic account chronology; administrative checksum=58380; this note contains no branch finding.\nREFERENCE_NOTE_0021: routine synthetic account chronology; administrative checksum=66299; this note contains no branch finding.\nREFERENCE_NOTE_0022: routine synthetic account chronology; administrative checksum=74218; this note contains no branch finding.\nREFERENCE_NOTE_0023: routine synthetic account chronology; administrative checksum=82137; this note contains no branch finding.\nREFERENCE_NOTE_0024: routine synthetic account chronology; administrative checksum=90056; this note contains no branch finding.\nREFERENCE_NOTE_0025: routine synthetic account chronology; administrative checksum=97975; this note contains no branch finding.\nREFERENCE_NOTE_0026: routine synthetic account chronology; administrative checksum=05894; this note contains no branch finding.\nREFERENCE_NOTE_0027: routine synthetic account chronology; administrative checksum=13813; this note contains no branch finding.\nREFERENCE_NOTE_0028: routine synthetic account chronology; administrative checksum=21732; this note contains no branch finding.\nREFERENCE_NOTE_0029: routine synthetic account chronology; administrative checksum=29651; this note contains no branch finding.\nREFERENCE_NOTE_0030: routine synthetic account chronology; administrative checksum=37570; this note contains no branch finding.\nREFERENCE_NOTE_0031: routine synthetic account chronology; administrative checksum=45489; this note contains no branch finding.\nREFERENCE_NOTE_0032: routine synthetic account chronology; administrative checksum=53408; this note contains no branch finding.\n\n<TRANSACTION_FINDING>\nTRANSACTION_RISK=LOW\nTRANSACTION_PATTERN=NORMAL\n</TRANSACTION_FINDING>\n\n<KYC_FINDING>\nKYC_STATUS=CURRENT\nKYC_RISK=LOW\n</KYC_FINDING>\n\nReport SCREENING_STATUS from an explicit SCREENING_FINDING. If no explicit screening finding is retained, report UNKNOWN. Return JSON only.",
+      "decision_prompt_chars": 5241,
+      "recall_prompt_chars": 4585,
+      "context_window_requested": 512,
+      "screening_in_constructed_prompt": true
+    },
+    "restored_context": {
+      "decision_prompt": "SYNTHETIC AML DECISION EXPERIMENT. All identifiers are fictional.\n\n<AML_SCREENING_FACT_7F3A>\nSCREENING_STATUS=HIT\nSCREENING_RISK=HIGH\nSCREENING_ENTITY=WATCHLIST_MATCH\n</AML_SCREENING_FACT_7F3A>\n\nREFERENCE_NOTE_0001: routine synthetic account chronology; administrative checksum=07919; this note contains no branch finding.\nREFERENCE_NOTE_0002: routine synthetic account chronology; administrative checksum=15838; this note contains no branch finding.\nREFERENCE_NOTE_0003: routine synthetic account chronology; administrative checksum=23757; this note contains no branch finding.\nREFERENCE_NOTE_0004: routine synthetic account chronology; administrative checksum=31676; this note contains no branch finding.\nREFERENCE_NOTE_0005: routine synthetic account chronology; administrative checksum=39595; this note contains no branch finding.\nREFERENCE_NOTE_0006: routine synthetic account chronology; administrative checksum=47514; this note contains no branch finding.\nREFERENCE_NOTE_0007: routine synthetic account chronology; administrative checksum=55433; this note contains no branch finding.\nREFERENCE_NOTE_0008: routine synthetic account chronology; administrative checksum=63352; this note contains no branch finding.\nREFERENCE_NOTE_0009: routine synthetic account chronology; administrative checksum=71271; this note contains no branch finding.\nREFERENCE_NOTE_0010: routine synthetic account chronology; administrative checksum=79190; this note contains no branch finding.\nREFERENCE_NOTE_0011: routine synthetic account chronology; administrative checksum=87109; this note contains no branch finding.\nREFERENCE_NOTE_0012: routine synthetic account chronology; administrative checksum=95028; this note contains no branch finding.\nREFERENCE_NOTE_0013: routine synthetic account chronology; administrative checksum=02947; this note contains no branch finding.\nREFERENCE_NOTE_0014: routine synthetic account chronology; administrative checksum=10866; this note contains no branch finding.\nREFERENCE_NOTE_0015: routine synthetic account chronology; administrative checksum=18785; this note contains no branch finding.\nREFERENCE_NOTE_0016: routine synthetic account chronology; administrative checksum=26704; this note contains no branch finding.\nREFERENCE_NOTE_0017: routine synthetic account chronology; administrative checksum=34623; this note contains no branch finding.\nREFERENCE_NOTE_0018: routine synthetic account chronology; administrative checksum=42542; this note contains no branch finding.\nREFERENCE_NOTE_0019: routine synthetic account chronology; administrative checksum=50461; this note contains no branch finding.\nREFERENCE_NOTE_0020: routine synthetic account chronology; administrative checksum=58380; this note contains no branch finding.\nREFERENCE_NOTE_0021: routine synthetic account chronology; administrative checksum=66299; this note contains no branch finding.\nREFERENCE_NOTE_0022: routine synthetic account chronology; administrative checksum=74218; this note contains no branch finding.\nREFERENCE_NOTE_0023: routine synthetic account chronology; administrative checksum=82137; this note contains no branch finding.\nREFERENCE_NOTE_0024: routine synthetic account chronology; administrative checksum=90056; this note contains no branch finding.\nREFERENCE_NOTE_0025: routine synthetic account chronology; administrative checksum=97975; this note contains no branch finding.\nREFERENCE_NOTE_0026: routine synthetic account chronology; administrative checksum=05894; this note contains no branch finding.\nREFERENCE_NOTE_0027: routine synthetic account chronology; administrative checksum=13813; this note contains no branch finding.\nREFERENCE_NOTE_0028: routine synthetic account chronology; administrative checksum=21732; this note contains no branch finding.\nREFERENCE_NOTE_0029: routine synthetic account chronology; administrative checksum=29651; this note contains no branch finding.\nREFERENCE_NOTE_0030: routine synthetic account chronology; administrative checksum=37570; this note contains no branch finding.\nREFERENCE_NOTE_0031: routine synthetic account chronology; administrative checksum=45489; this note contains no branch finding.\nREFERENCE_NOTE_0032: routine synthetic account chronology; administrative checksum=53408; this note contains no branch finding.\n\n<TRANSACTION_FINDING>\nTRANSACTION_RISK=LOW\nTRANSACTION_PATTERN=NORMAL\n</TRANSACTION_FINDING>\n\n<KYC_FINDING>\nKYC_STATUS=CURRENT\nKYC_RISK=LOW\n</KYC_FINDING>\n\nDECISION POLICY (apply exactly):\n1. An explicit positive watchlist screening finding requires ESCALATE.\n2. FILE_SAR requires a separately stated SAR policy condition. No such condition exists in this case.\n3. CLEAR is permitted only when an explicit negative watchlist screening finding, low transaction risk, and current KYC are all retained.\n4. If the screening finding is unavailable, return INSUFFICIENT_EVIDENCE. Never silently treat missing evidence as a negative result.\n\n\nReturn one decision for synthetic case AML-CTX-001.\nUse only the evidence retained in this request. Do not invent absent findings.\nBefore deciding, scan the retained request for the tagged screening-finding block and apply its actual value if present.\nReturn JSON with disposition, rationale, and evidence_cited.\n",
+      "recall_prompt": "SYNTHETIC AML EVIDENCE RECALL PROBE. Do not make a disposition.\n\n<AML_SCREENING_FACT_7F3A>\nSCREENING_STATUS=HIT\nSCREENING_RISK=HIGH\nSCREENING_ENTITY=WATCHLIST_MATCH\n</AML_SCREENING_FACT_7F3A>\n\nREFERENCE_NOTE_0001: routine synthetic account chronology; administrative checksum=07919; this note contains no branch finding.\nREFERENCE_NOTE_0002: routine synthetic account chronology; administrative checksum=15838; this note contains no branch finding.\nREFERENCE_NOTE_0003: routine synthetic account chronology; administrative checksum=23757; this note contains no branch finding.\nREFERENCE_NOTE_0004: routine synthetic account chronology; administrative checksum=31676; this note contains no branch finding.\nREFERENCE_NOTE_0005: routine synthetic account chronology; administrative checksum=39595; this note contains no branch finding.\nREFERENCE_NOTE_0006: routine synthetic account chronology; administrative checksum=47514; this note contains no branch finding.\nREFERENCE_NOTE_0007: routine synthetic account chronology; administrative checksum=55433; this note contains no branch finding.\nREFERENCE_NOTE_0008: routine synthetic account chronology; administrative checksum=63352; this note contains no branch finding.\nREFERENCE_NOTE_0009: routine synthetic account chronology; administrative checksum=71271; this note contains no branch finding.\nREFERENCE_NOTE_0010: routine synthetic account chronology; administrative checksum=79190; this note contains no branch finding.\nREFERENCE_NOTE_0011: routine synthetic account chronology; administrative checksum=87109; this note contains no branch finding.\nREFERENCE_NOTE_0012: routine synthetic account chronology; administrative checksum=95028; this note contains no branch finding.\nREFERENCE_NOTE_0013: routine synthetic account chronology; administrative checksum=02947; this note contains no branch finding.\nREFERENCE_NOTE_0014: routine synthetic account chronology; administrative checksum=10866; this note contains no branch finding.\nREFERENCE_NOTE_0015: routine synthetic account chronology; administrative checksum=18785; this note contains no branch finding.\nREFERENCE_NOTE_0016: routine synthetic account chronology; administrative checksum=26704; this note contains no branch finding.\nREFERENCE_NOTE_0017: routine synthetic account chronology; administrative checksum=34623; this note contains no branch finding.\nREFERENCE_NOTE_0018: routine synthetic account chronology; administrative checksum=42542; this note contains no branch finding.\nREFERENCE_NOTE_0019: routine synthetic account chronology; administrative checksum=50461; this note contains no branch finding.\nREFERENCE_NOTE_0020: routine synthetic account chronology; administrative checksum=58380; this note contains no branch finding.\nREFERENCE_NOTE_0021: routine synthetic account chronology; administrative checksum=66299; this note contains no branch finding.\nREFERENCE_NOTE_0022: routine synthetic account chronology; administrative checksum=74218; this note contains no branch finding.\nREFERENCE_NOTE_0023: routine synthetic account chronology; administrative checksum=82137; this note contains no branch finding.\nREFERENCE_NOTE_0024: routine synthetic account chronology; administrative checksum=90056; this note contains no branch finding.\nREFERENCE_NOTE_0025: routine synthetic account chronology; administrative checksum=97975; this note contains no branch finding.\nREFERENCE_NOTE_0026: routine synthetic account chronology; administrative checksum=05894; this note contains no branch finding.\nREFERENCE_NOTE_0027: routine synthetic account chronology; administrative checksum=13813; this note contains no branch finding.\nREFERENCE_NOTE_0028: routine synthetic account chronology; administrative checksum=21732; this note contains no branch finding.\nREFERENCE_NOTE_0029: routine synthetic account chronology; administrative checksum=29651; this note contains no branch finding.\nREFERENCE_NOTE_0030: routine synthetic account chronology; administrative checksum=37570; this note contains no branch finding.\nREFERENCE_NOTE_0031: routine synthetic account chronology; administrative checksum=45489; this note contains no branch finding.\nREFERENCE_NOTE_0032: routine synthetic account chronology; administrative checksum=53408; this note contains no branch finding.\n\n<TRANSACTION_FINDING>\nTRANSACTION_RISK=LOW\nTRANSACTION_PATTERN=NORMAL\n</TRANSACTION_FINDING>\n\n<KYC_FINDING>\nKYC_STATUS=CURRENT\nKYC_RISK=LOW\n</KYC_FINDING>\n\nReport SCREENING_STATUS from an explicit SCREENING_FINDING. If no explicit screening finding is retained, report UNKNOWN. Return JSON only.",
+      "decision_prompt_chars": 5241,
+      "recall_prompt_chars": 4585,
+      "context_window_requested": 8192,
+      "screening_in_constructed_prompt": true
+    }
+  },
+  "causal_checks": {
+    "constrained_token_reduction": true,
+    "constrained_prompt_eval_counts": [
+      258,
+      258,
+      258,
+      258,
+      258,
+      258,
+      258,
+      258,
+      258,
+      258
+    ],
+    "restored_prompt_eval_counts": [
+      1079,
+      1079,
+      1079,
+      1079,
+      1079,
+      1079,
+      1079,
+      1079,
+      1079,
+      1079
+    ],
+    "specific_retained_sequence_directly_observable": false,
+    "visibility_interpretation": "Specific screening loss is inferred only when reduced prompt processing and separate recall failure coincide."
+  },
+  "summaries": {
+    "full_context": {
+      "trials": 10,
+      "dispositions": {
+        "ESCALATE": 10
+      },
+      "recall_statuses": {
+        "HIT": 10
+      },
+      "correct_escalations": 10,
+      "incorrect_clears": 0,
+      "other_incorrect_dispositions": 0,
+      "abstentions": 0,
+      "parsing_failures": 0,
+      "runtime_failures": 0,
+      "evidence_recall_success": 10,
+      "evidence_recall_failure": 0,
+      "decision_accuracy": {
+        "numerator": 10,
+        "denominator": 10,
+        "rate": 1.0
+      },
+      "incorrect_clear_rate": {
+        "numerator": 0,
+        "denominator": 10,
+        "rate": 0.0
+      },
+      "evidence_recall_rate": {
+        "numerator": 10,
+        "denominator": 10,
+        "rate": 1.0
+      },
+      "invalid_output_rate": {
+        "numerator": 0,
+        "denominator": 10,
+        "rate": 0.0
+      }
+    },
+    "constrained_context": {
+      "trials": 10,
+      "dispositions": {
+        "INSUFFICIENT_EVIDENCE": 10
+      },
+      "recall_statuses": {
+        "UNKNOWN": 10
+      },
+      "correct_escalations": 0,
+      "incorrect_clears": 0,
+      "other_incorrect_dispositions": 0,
+      "abstentions": 10,
+      "parsing_failures": 0,
+      "runtime_failures": 0,
+      "evidence_recall_success": 0,
+      "evidence_recall_failure": 10,
+      "decision_accuracy": {
+        "numerator": 0,
+        "denominator": 10,
+        "rate": 0.0
+      },
+      "incorrect_clear_rate": {
+        "numerator": 0,
+        "denominator": 10,
+        "rate": 0.0
+      },
+      "evidence_recall_rate": {
+        "numerator": 0,
+        "denominator": 10,
+        "rate": 0.0
+      },
+      "invalid_output_rate": {
+        "numerator": 0,
+        "denominator": 10,
+        "rate": 0.0
+      }
+    },
+    "restored_context": {
+      "trials": 10,
+      "dispositions": {
+        "ESCALATE": 10
+      },
+      "recall_statuses": {
+        "HIT": 10
+      },
+      "correct_escalations": 10,
+      "incorrect_clears": 0,
+      "other_incorrect_dispositions": 0,
+      "abstentions": 0,
+      "parsing_failures": 0,
+      "runtime_failures": 0,
+      "evidence_recall_success": 10,
+      "evidence_recall_failure": 0,
+      "decision_accuracy": {
+        "numerator": 10,
+        "denominator": 10,
+        "rate": 1.0
+      },
+      "incorrect_clear_rate": {
+        "numerator": 0,
+        "denominator": 10,
+        "rate": 0.0
+      },
+      "evidence_recall_rate": {
+        "numerator": 10,
+        "denominator": 10,
+        "rate": 1.0
+      },
+      "invalid_output_rate": {
+        "numerator": 0,
+        "denominator": 10,
+        "rate": 0.0
+      }
+    }
+  },
+  "trials": {
+    "full_context": [
+      {
+        "trial": 1,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"ESCALATE\",\n  \"rationale\": \"Explicit positive watchlist screening finding\",\n  \"evidence_cited\": [\n    \"<AML_SCREENING_FACT_7F3A> SCREENING_STATUS=HIT SCREENING_RISK=HIGH SCREENING_ENTITY=WATCHLIST_MATCH </AML_SCREENING_FACT_7F3A>\"\n  ]\n}",
+          "parsed": {
+            "disposition": "ESCALATE",
+            "rationale": "Explicit positive watchlist screening finding",
+            "evidence_cited": [
+              "<AML_SCREENING_FACT_7F3A> SCREENING_STATUS=HIT SCREENING_RISK=HIGH SCREENING_ENTITY=WATCHLIST_MATCH </AML_SCREENING_FACT_7F3A>"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 279,
+          "output_eval_count": 78,
+          "total_duration_ns": 4946377042,
+          "load_duration_ns": 1359368417,
+          "context_window_requested": 2048,
+          "context_window_effective": 2048
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"HIT\",\n  \"evidence_quote\": \"SCREENING_STATUS=HIT\"\n}",
+          "parsed": {
+            "screening_status": "HIT",
+            "evidence_quote": "SCREENING_STATUS=HIT"
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 151,
+          "output_eval_count": 29,
+          "total_duration_ns": 1495900042,
+          "load_duration_ns": 782709,
+          "context_window_requested": 2048,
+          "context_window_effective": 2048
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "VERIFIED_BY_SEPARATE_RECALL"
+      },
+      {
+        "trial": 2,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"ESCALATE\",\n  \"rationale\": \"Explicit positive watchlist screening finding\",\n  \"evidence_cited\": [\n    \"<AML_SCREENING_FACT_7F3A>\",\n    \"SCREENING_STATUS=HIT\",\n    \"SCREENING_RISK=HIGH\",\n    \"SCREENING_ENTITY=WATCHLIST_MATCH\"\n  ]\n}",
+          "parsed": {
+            "disposition": "ESCALATE",
+            "rationale": "Explicit positive watchlist screening finding",
+            "evidence_cited": [
+              "<AML_SCREENING_FACT_7F3A>",
+              "SCREENING_STATUS=HIT",
+              "SCREENING_RISK=HIGH",
+              "SCREENING_ENTITY=WATCHLIST_MATCH"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 279,
+          "output_eval_count": 76,
+          "total_duration_ns": 2963763708,
+          "load_duration_ns": 955666,
+          "context_window_requested": 2048,
+          "context_window_effective": 2048
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"HIT\",\n  \"evidence_quote\": \"SCREENING_STATUS=HIT\"\n}",
+          "parsed": {
+            "screening_status": "HIT",
+            "evidence_quote": "SCREENING_STATUS=HIT"
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 151,
+          "output_eval_count": 29,
+          "total_duration_ns": 1164679500,
+          "load_duration_ns": 745208,
+          "context_window_requested": 2048,
+          "context_window_effective": 2048
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "VERIFIED_BY_SEPARATE_RECALL"
+      },
+      {
+        "trial": 3,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"ESCALATE\",\n  \"rationale\": \"Explicit positive watchlist screening finding\",\n  \"evidence_cited\": [\n    \"<AML_SCREENING_FACT_7F3A>\",\n    \"SCREENING_STATUS=HIT\",\n    \"SCREENING_RISK=HIGH\",\n    \"SCREENING_ENTITY=WATCHLIST_MATCH\"\n  ]\n}",
+          "parsed": {
+            "disposition": "ESCALATE",
+            "rationale": "Explicit positive watchlist screening finding",
+            "evidence_cited": [
+              "<AML_SCREENING_FACT_7F3A>",
+              "SCREENING_STATUS=HIT",
+              "SCREENING_RISK=HIGH",
+              "SCREENING_ENTITY=WATCHLIST_MATCH"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 279,
+          "output_eval_count": 76,
+          "total_duration_ns": 2969495500,
+          "load_duration_ns": 728792,
+          "context_window_requested": 2048,
+          "context_window_effective": 2048
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"HIT\",\n  \"evidence_quote\": \"SCREENING_STATUS=HIT\"\n}",
+          "parsed": {
+            "screening_status": "HIT",
+            "evidence_quote": "SCREENING_STATUS=HIT"
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 151,
+          "output_eval_count": 29,
+          "total_duration_ns": 1167223708,
+          "load_duration_ns": 638833,
+          "context_window_requested": 2048,
+          "context_window_effective": 2048
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "VERIFIED_BY_SEPARATE_RECALL"
+      },
+      {
+        "trial": 4,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"ESCALATE\",\n  \"rationale\": \"Explicit positive watchlist screening finding\",\n  \"evidence_cited\": [\n    \"<AML_SCREENING_FACT_7F3A>\",\n    \"SCREENING_STATUS=HIT\",\n    \"SCREENING_RISK=HIGH\",\n    \"SCREENING_ENTITY=WATCHLIST_MATCH\"\n  ]\n}",
+          "parsed": {
+            "disposition": "ESCALATE",
+            "rationale": "Explicit positive watchlist screening finding",
+            "evidence_cited": [
+              "<AML_SCREENING_FACT_7F3A>",
+              "SCREENING_STATUS=HIT",
+              "SCREENING_RISK=HIGH",
+              "SCREENING_ENTITY=WATCHLIST_MATCH"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 279,
+          "output_eval_count": 76,
+          "total_duration_ns": 2972070708,
+          "load_duration_ns": 690375,
+          "context_window_requested": 2048,
+          "context_window_effective": 2048
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"HIT\",\n  \"evidence_quote\": \"SCREENING_STATUS=HIT\"\n}",
+          "parsed": {
+            "screening_status": "HIT",
+            "evidence_quote": "SCREENING_STATUS=HIT"
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 151,
+          "output_eval_count": 29,
+          "total_duration_ns": 1165356167,
+          "load_duration_ns": 633000,
+          "context_window_requested": 2048,
+          "context_window_effective": 2048
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "VERIFIED_BY_SEPARATE_RECALL"
+      },
+      {
+        "trial": 5,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"ESCALATE\",\n  \"rationale\": \"Explicit positive watchlist screening finding\",\n  \"evidence_cited\": [\n    \"<AML_SCREENING_FACT_7F3A>\",\n    \"SCREENING_STATUS=HIT\",\n    \"SCREENING_RISK=HIGH\",\n    \"SCREENING_ENTITY=WATCHLIST_MATCH\"\n  ]\n}",
+          "parsed": {
+            "disposition": "ESCALATE",
+            "rationale": "Explicit positive watchlist screening finding",
+            "evidence_cited": [
+              "<AML_SCREENING_FACT_7F3A>",
+              "SCREENING_STATUS=HIT",
+              "SCREENING_RISK=HIGH",
+              "SCREENING_ENTITY=WATCHLIST_MATCH"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 279,
+          "output_eval_count": 76,
+          "total_duration_ns": 2970313583,
+          "load_duration_ns": 742916,
+          "context_window_requested": 2048,
+          "context_window_effective": 2048
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"HIT\",\n  \"evidence_quote\": \"SCREENING_STATUS=HIT\"\n}",
+          "parsed": {
+            "screening_status": "HIT",
+            "evidence_quote": "SCREENING_STATUS=HIT"
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 151,
+          "output_eval_count": 29,
+          "total_duration_ns": 1165265542,
+          "load_duration_ns": 699000,
+          "context_window_requested": 2048,
+          "context_window_effective": 2048
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "VERIFIED_BY_SEPARATE_RECALL"
+      },
+      {
+        "trial": 6,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"ESCALATE\",\n  \"rationale\": \"Explicit positive watchlist screening finding\",\n  \"evidence_cited\": [\n    \"<AML_SCREENING_FACT_7F3A>\",\n    \"SCREENING_STATUS=HIT\",\n    \"SCREENING_RISK=HIGH\",\n    \"SCREENING_ENTITY=WATCHLIST_MATCH\"\n  ]\n}",
+          "parsed": {
+            "disposition": "ESCALATE",
+            "rationale": "Explicit positive watchlist screening finding",
+            "evidence_cited": [
+              "<AML_SCREENING_FACT_7F3A>",
+              "SCREENING_STATUS=HIT",
+              "SCREENING_RISK=HIGH",
+              "SCREENING_ENTITY=WATCHLIST_MATCH"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 279,
+          "output_eval_count": 76,
+          "total_duration_ns": 2960374958,
+          "load_duration_ns": 742416,
+          "context_window_requested": 2048,
+          "context_window_effective": 2048
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"HIT\",\n  \"evidence_quote\": \"SCREENING_STATUS=HIT\"\n}",
+          "parsed": {
+            "screening_status": "HIT",
+            "evidence_quote": "SCREENING_STATUS=HIT"
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 151,
+          "output_eval_count": 29,
+          "total_duration_ns": 1158307000,
+          "load_duration_ns": 882666,
+          "context_window_requested": 2048,
+          "context_window_effective": 2048
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "VERIFIED_BY_SEPARATE_RECALL"
+      },
+      {
+        "trial": 7,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"ESCALATE\",\n  \"rationale\": \"Explicit positive watchlist screening finding\",\n  \"evidence_cited\": [\n    \"<AML_SCREENING_FACT_7F3A>\",\n    \"SCREENING_STATUS=HIT\",\n    \"SCREENING_RISK=HIGH\",\n    \"SCREENING_ENTITY=WATCHLIST_MATCH\"\n  ]\n}",
+          "parsed": {
+            "disposition": "ESCALATE",
+            "rationale": "Explicit positive watchlist screening finding",
+            "evidence_cited": [
+              "<AML_SCREENING_FACT_7F3A>",
+              "SCREENING_STATUS=HIT",
+              "SCREENING_RISK=HIGH",
+              "SCREENING_ENTITY=WATCHLIST_MATCH"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 279,
+          "output_eval_count": 76,
+          "total_duration_ns": 2949549417,
+          "load_duration_ns": 713000,
+          "context_window_requested": 2048,
+          "context_window_effective": 2048
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"HIT\",\n  \"evidence_quote\": \"SCREENING_STATUS=HIT\"\n}",
+          "parsed": {
+            "screening_status": "HIT",
+            "evidence_quote": "SCREENING_STATUS=HIT"
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 151,
+          "output_eval_count": 29,
+          "total_duration_ns": 1157059500,
+          "load_duration_ns": 720000,
+          "context_window_requested": 2048,
+          "context_window_effective": 2048
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "VERIFIED_BY_SEPARATE_RECALL"
+      },
+      {
+        "trial": 8,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"ESCALATE\",\n  \"rationale\": \"Explicit positive watchlist screening finding\",\n  \"evidence_cited\": [\n    \"<AML_SCREENING_FACT_7F3A>\",\n    \"SCREENING_STATUS=HIT\",\n    \"SCREENING_RISK=HIGH\",\n    \"SCREENING_ENTITY=WATCHLIST_MATCH\"\n  ]\n}",
+          "parsed": {
+            "disposition": "ESCALATE",
+            "rationale": "Explicit positive watchlist screening finding",
+            "evidence_cited": [
+              "<AML_SCREENING_FACT_7F3A>",
+              "SCREENING_STATUS=HIT",
+              "SCREENING_RISK=HIGH",
+              "SCREENING_ENTITY=WATCHLIST_MATCH"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 279,
+          "output_eval_count": 76,
+          "total_duration_ns": 2951880667,
+          "load_duration_ns": 698334,
+          "context_window_requested": 2048,
+          "context_window_effective": 2048
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"HIT\",\n  \"evidence_quote\": \"SCREENING_STATUS=HIT\"\n}",
+          "parsed": {
+            "screening_status": "HIT",
+            "evidence_quote": "SCREENING_STATUS=HIT"
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 151,
+          "output_eval_count": 29,
+          "total_duration_ns": 1157629875,
+          "load_duration_ns": 683042,
+          "context_window_requested": 2048,
+          "context_window_effective": 2048
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "VERIFIED_BY_SEPARATE_RECALL"
+      },
+      {
+        "trial": 9,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"ESCALATE\",\n  \"rationale\": \"Explicit positive watchlist screening finding\",\n  \"evidence_cited\": [\n    \"<AML_SCREENING_FACT_7F3A>\",\n    \"SCREENING_STATUS=HIT\",\n    \"SCREENING_RISK=HIGH\",\n    \"SCREENING_ENTITY=WATCHLIST_MATCH\"\n  ]\n}",
+          "parsed": {
+            "disposition": "ESCALATE",
+            "rationale": "Explicit positive watchlist screening finding",
+            "evidence_cited": [
+              "<AML_SCREENING_FACT_7F3A>",
+              "SCREENING_STATUS=HIT",
+              "SCREENING_RISK=HIGH",
+              "SCREENING_ENTITY=WATCHLIST_MATCH"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 279,
+          "output_eval_count": 76,
+          "total_duration_ns": 2964935458,
+          "load_duration_ns": 1170500,
+          "context_window_requested": 2048,
+          "context_window_effective": 2048
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"HIT\",\n  \"evidence_quote\": \"SCREENING_STATUS=HIT\"\n}",
+          "parsed": {
+            "screening_status": "HIT",
+            "evidence_quote": "SCREENING_STATUS=HIT"
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 151,
+          "output_eval_count": 29,
+          "total_duration_ns": 1162115208,
+          "load_duration_ns": 746042,
+          "context_window_requested": 2048,
+          "context_window_effective": 2048
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "VERIFIED_BY_SEPARATE_RECALL"
+      },
+      {
+        "trial": 10,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"ESCALATE\",\n  \"rationale\": \"Explicit positive watchlist screening finding\",\n  \"evidence_cited\": [\n    \"<AML_SCREENING_FACT_7F3A>\",\n    \"SCREENING_STATUS=HIT\",\n    \"SCREENING_RISK=HIGH\",\n    \"SCREENING_ENTITY=WATCHLIST_MATCH\"\n  ]\n}",
+          "parsed": {
+            "disposition": "ESCALATE",
+            "rationale": "Explicit positive watchlist screening finding",
+            "evidence_cited": [
+              "<AML_SCREENING_FACT_7F3A>",
+              "SCREENING_STATUS=HIT",
+              "SCREENING_RISK=HIGH",
+              "SCREENING_ENTITY=WATCHLIST_MATCH"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 279,
+          "output_eval_count": 76,
+          "total_duration_ns": 2972400625,
+          "load_duration_ns": 992292,
+          "context_window_requested": 2048,
+          "context_window_effective": 2048
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"HIT\",\n  \"evidence_quote\": \"SCREENING_STATUS=HIT\"\n}",
+          "parsed": {
+            "screening_status": "HIT",
+            "evidence_quote": "SCREENING_STATUS=HIT"
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 151,
+          "output_eval_count": 29,
+          "total_duration_ns": 1158295708,
+          "load_duration_ns": 757208,
+          "context_window_requested": 2048,
+          "context_window_effective": 2048
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "VERIFIED_BY_SEPARATE_RECALL"
+      }
+    ],
+    "constrained_context": [
+      {
+        "trial": 1,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"INSUFFICIENT_EVIDENCE\",\n  \"rationale\": \"Screening finding is unavailable\",\n  \"evidence_cited\": [\n    \"TRANSACTION_FINDING\",\n    \"KYC_FINDING\",\n    \"REFERENCE_NOTE_0032\",\n    \"REFERENCE_NOTE_0031\"\n  ]\n}",
+          "parsed": {
+            "disposition": "INSUFFICIENT_EVIDENCE",
+            "rationale": "Screening finding is unavailable",
+            "evidence_cited": [
+              "TRANSACTION_FINDING",
+              "KYC_FINDING",
+              "REFERENCE_NOTE_0032",
+              "REFERENCE_NOTE_0031"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 258,
+          "output_eval_count": 68,
+          "total_duration_ns": 3745194750,
+          "load_duration_ns": 558896083,
+          "context_window_requested": 512,
+          "context_window_effective": 512
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"UNKNOWN\",\n  \"evidence_quote\": \"No explicit screening finding is retained.\"\n}",
+          "parsed": {
+            "screening_status": "UNKNOWN",
+            "evidence_quote": "No explicit screening finding is retained."
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 258,
+          "output_eval_count": 28,
+          "total_duration_ns": 1506308041,
+          "load_duration_ns": 866875,
+          "context_window_requested": 512,
+          "context_window_effective": 512
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "INFERRED_NOT_RETAINED"
+      },
+      {
+        "trial": 2,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"INSUFFICIENT_EVIDENCE\",\n  \"rationale\": \"Screening finding is unavailable\",\n  \"evidence_cited\": [\n    \"TRANSACTION_FINDING\",\n    \"KYC_FINDING\",\n    \"REFERENCE_NOTE_0032\",\n    \"REFERENCE_NOTE_0031\"\n  ]\n}",
+          "parsed": {
+            "disposition": "INSUFFICIENT_EVIDENCE",
+            "rationale": "Screening finding is unavailable",
+            "evidence_cited": [
+              "TRANSACTION_FINDING",
+              "KYC_FINDING",
+              "REFERENCE_NOTE_0032",
+              "REFERENCE_NOTE_0031"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 258,
+          "output_eval_count": 68,
+          "total_duration_ns": 2647462583,
+          "load_duration_ns": 739500,
+          "context_window_requested": 512,
+          "context_window_effective": 512
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"UNKNOWN\",\n  \"evidence_quote\": \"No explicit screening finding is retained.\"\n}",
+          "parsed": {
+            "screening_status": "UNKNOWN",
+            "evidence_quote": "No explicit screening finding is retained."
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 258,
+          "output_eval_count": 28,
+          "total_duration_ns": 1124286667,
+          "load_duration_ns": 775625,
+          "context_window_requested": 512,
+          "context_window_effective": 512
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "INFERRED_NOT_RETAINED"
+      },
+      {
+        "trial": 3,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"INSUFFICIENT_EVIDENCE\",\n  \"rationale\": \"Screening finding is unavailable\",\n  \"evidence_cited\": [\n    \"TRANSACTION_FINDING\",\n    \"KYC_FINDING\",\n    \"REFERENCE_NOTE_0032\",\n    \"REFERENCE_NOTE_0031\"\n  ]\n}",
+          "parsed": {
+            "disposition": "INSUFFICIENT_EVIDENCE",
+            "rationale": "Screening finding is unavailable",
+            "evidence_cited": [
+              "TRANSACTION_FINDING",
+              "KYC_FINDING",
+              "REFERENCE_NOTE_0032",
+              "REFERENCE_NOTE_0031"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 258,
+          "output_eval_count": 68,
+          "total_duration_ns": 2643840333,
+          "load_duration_ns": 937958,
+          "context_window_requested": 512,
+          "context_window_effective": 512
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"UNKNOWN\",\n  \"evidence_quote\": \"No explicit screening finding is retained.\"\n}",
+          "parsed": {
+            "screening_status": "UNKNOWN",
+            "evidence_quote": "No explicit screening finding is retained."
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 258,
+          "output_eval_count": 28,
+          "total_duration_ns": 1126353458,
+          "load_duration_ns": 712666,
+          "context_window_requested": 512,
+          "context_window_effective": 512
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "INFERRED_NOT_RETAINED"
+      },
+      {
+        "trial": 4,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"INSUFFICIENT_EVIDENCE\",\n  \"rationale\": \"Screening finding is unavailable\",\n  \"evidence_cited\": [\n    \"TRANSACTION_FINDING\",\n    \"KYC_FINDING\",\n    \"REFERENCE_NOTE_0032\",\n    \"REFERENCE_NOTE_0031\"\n  ]\n}",
+          "parsed": {
+            "disposition": "INSUFFICIENT_EVIDENCE",
+            "rationale": "Screening finding is unavailable",
+            "evidence_cited": [
+              "TRANSACTION_FINDING",
+              "KYC_FINDING",
+              "REFERENCE_NOTE_0032",
+              "REFERENCE_NOTE_0031"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 258,
+          "output_eval_count": 68,
+          "total_duration_ns": 2642882708,
+          "load_duration_ns": 919125,
+          "context_window_requested": 512,
+          "context_window_effective": 512
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"UNKNOWN\",\n  \"evidence_quote\": \"No explicit screening finding is retained.\"\n}",
+          "parsed": {
+            "screening_status": "UNKNOWN",
+            "evidence_quote": "No explicit screening finding is retained."
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 258,
+          "output_eval_count": 28,
+          "total_duration_ns": 1122880917,
+          "load_duration_ns": 710750,
+          "context_window_requested": 512,
+          "context_window_effective": 512
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "INFERRED_NOT_RETAINED"
+      },
+      {
+        "trial": 5,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"INSUFFICIENT_EVIDENCE\",\n  \"rationale\": \"Screening finding is unavailable\",\n  \"evidence_cited\": [\n    \"TRANSACTION_FINDING\",\n    \"KYC_FINDING\",\n    \"REFERENCE_NOTE_0032\",\n    \"REFERENCE_NOTE_0031\"\n  ]\n}",
+          "parsed": {
+            "disposition": "INSUFFICIENT_EVIDENCE",
+            "rationale": "Screening finding is unavailable",
+            "evidence_cited": [
+              "TRANSACTION_FINDING",
+              "KYC_FINDING",
+              "REFERENCE_NOTE_0032",
+              "REFERENCE_NOTE_0031"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 258,
+          "output_eval_count": 68,
+          "total_duration_ns": 2642872792,
+          "load_duration_ns": 951417,
+          "context_window_requested": 512,
+          "context_window_effective": 512
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"UNKNOWN\",\n  \"evidence_quote\": \"No explicit screening finding is retained.\"\n}",
+          "parsed": {
+            "screening_status": "UNKNOWN",
+            "evidence_quote": "No explicit screening finding is retained."
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 258,
+          "output_eval_count": 28,
+          "total_duration_ns": 1124331541,
+          "load_duration_ns": 3719500,
+          "context_window_requested": 512,
+          "context_window_effective": 512
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "INFERRED_NOT_RETAINED"
+      },
+      {
+        "trial": 6,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"INSUFFICIENT_EVIDENCE\",\n  \"rationale\": \"Screening finding is unavailable\",\n  \"evidence_cited\": [\n    \"TRANSACTION_FINDING\",\n    \"KYC_FINDING\",\n    \"REFERENCE_NOTE_0032\",\n    \"REFERENCE_NOTE_0031\"\n  ]\n}",
+          "parsed": {
+            "disposition": "INSUFFICIENT_EVIDENCE",
+            "rationale": "Screening finding is unavailable",
+            "evidence_cited": [
+              "TRANSACTION_FINDING",
+              "KYC_FINDING",
+              "REFERENCE_NOTE_0032",
+              "REFERENCE_NOTE_0031"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 258,
+          "output_eval_count": 68,
+          "total_duration_ns": 2645535500,
+          "load_duration_ns": 877708,
+          "context_window_requested": 512,
+          "context_window_effective": 512
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"UNKNOWN\",\n  \"evidence_quote\": \"No explicit screening finding is retained.\"\n}",
+          "parsed": {
+            "screening_status": "UNKNOWN",
+            "evidence_quote": "No explicit screening finding is retained."
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 258,
+          "output_eval_count": 28,
+          "total_duration_ns": 1121792125,
+          "load_duration_ns": 715208,
+          "context_window_requested": 512,
+          "context_window_effective": 512
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "INFERRED_NOT_RETAINED"
+      },
+      {
+        "trial": 7,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"INSUFFICIENT_EVIDENCE\",\n  \"rationale\": \"Screening finding is unavailable\",\n  \"evidence_cited\": [\n    \"TRANSACTION_FINDING\",\n    \"KYC_FINDING\",\n    \"REFERENCE_NOTE_0032\",\n    \"REFERENCE_NOTE_0031\"\n  ]\n}",
+          "parsed": {
+            "disposition": "INSUFFICIENT_EVIDENCE",
+            "rationale": "Screening finding is unavailable",
+            "evidence_cited": [
+              "TRANSACTION_FINDING",
+              "KYC_FINDING",
+              "REFERENCE_NOTE_0032",
+              "REFERENCE_NOTE_0031"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 258,
+          "output_eval_count": 68,
+          "total_duration_ns": 2646309125,
+          "load_duration_ns": 673500,
+          "context_window_requested": 512,
+          "context_window_effective": 512
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"UNKNOWN\",\n  \"evidence_quote\": \"No explicit screening finding is retained.\"\n}",
+          "parsed": {
+            "screening_status": "UNKNOWN",
+            "evidence_quote": "No explicit screening finding is retained."
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 258,
+          "output_eval_count": 28,
+          "total_duration_ns": 1121905375,
+          "load_duration_ns": 963833,
+          "context_window_requested": 512,
+          "context_window_effective": 512
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "INFERRED_NOT_RETAINED"
+      },
+      {
+        "trial": 8,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"INSUFFICIENT_EVIDENCE\",\n  \"rationale\": \"Screening finding is unavailable\",\n  \"evidence_cited\": [\n    \"TRANSACTION_FINDING\",\n    \"KYC_FINDING\",\n    \"REFERENCE_NOTE_0032\",\n    \"REFERENCE_NOTE_0031\"\n  ]\n}",
+          "parsed": {
+            "disposition": "INSUFFICIENT_EVIDENCE",
+            "rationale": "Screening finding is unavailable",
+            "evidence_cited": [
+              "TRANSACTION_FINDING",
+              "KYC_FINDING",
+              "REFERENCE_NOTE_0032",
+              "REFERENCE_NOTE_0031"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 258,
+          "output_eval_count": 68,
+          "total_duration_ns": 2649409042,
+          "load_duration_ns": 693333,
+          "context_window_requested": 512,
+          "context_window_effective": 512
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"UNKNOWN\",\n  \"evidence_quote\": \"No explicit screening finding is retained.\"\n}",
+          "parsed": {
+            "screening_status": "UNKNOWN",
+            "evidence_quote": "No explicit screening finding is retained."
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 258,
+          "output_eval_count": 28,
+          "total_duration_ns": 1124229500,
+          "load_duration_ns": 983833,
+          "context_window_requested": 512,
+          "context_window_effective": 512
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "INFERRED_NOT_RETAINED"
+      },
+      {
+        "trial": 9,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"INSUFFICIENT_EVIDENCE\",\n  \"rationale\": \"Screening finding is unavailable\",\n  \"evidence_cited\": [\n    \"TRANSACTION_FINDING\",\n    \"KYC_FINDING\",\n    \"REFERENCE_NOTE_0032\",\n    \"REFERENCE_NOTE_0031\"\n  ]\n}",
+          "parsed": {
+            "disposition": "INSUFFICIENT_EVIDENCE",
+            "rationale": "Screening finding is unavailable",
+            "evidence_cited": [
+              "TRANSACTION_FINDING",
+              "KYC_FINDING",
+              "REFERENCE_NOTE_0032",
+              "REFERENCE_NOTE_0031"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 258,
+          "output_eval_count": 68,
+          "total_duration_ns": 2648224208,
+          "load_duration_ns": 711292,
+          "context_window_requested": 512,
+          "context_window_effective": 512
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"UNKNOWN\",\n  \"evidence_quote\": \"No explicit screening finding is retained.\"\n}",
+          "parsed": {
+            "screening_status": "UNKNOWN",
+            "evidence_quote": "No explicit screening finding is retained."
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 258,
+          "output_eval_count": 28,
+          "total_duration_ns": 1121778833,
+          "load_duration_ns": 692166,
+          "context_window_requested": 512,
+          "context_window_effective": 512
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "INFERRED_NOT_RETAINED"
+      },
+      {
+        "trial": 10,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"INSUFFICIENT_EVIDENCE\",\n  \"rationale\": \"Screening finding is unavailable\",\n  \"evidence_cited\": [\n    \"TRANSACTION_FINDING\",\n    \"KYC_FINDING\",\n    \"REFERENCE_NOTE_0032\",\n    \"REFERENCE_NOTE_0031\"\n  ]\n}",
+          "parsed": {
+            "disposition": "INSUFFICIENT_EVIDENCE",
+            "rationale": "Screening finding is unavailable",
+            "evidence_cited": [
+              "TRANSACTION_FINDING",
+              "KYC_FINDING",
+              "REFERENCE_NOTE_0032",
+              "REFERENCE_NOTE_0031"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 258,
+          "output_eval_count": 68,
+          "total_duration_ns": 2651824083,
+          "load_duration_ns": 734708,
+          "context_window_requested": 512,
+          "context_window_effective": 512
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"UNKNOWN\",\n  \"evidence_quote\": \"No explicit screening finding is retained.\"\n}",
+          "parsed": {
+            "screening_status": "UNKNOWN",
+            "evidence_quote": "No explicit screening finding is retained."
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 258,
+          "output_eval_count": 28,
+          "total_duration_ns": 1122169583,
+          "load_duration_ns": 757250,
+          "context_window_requested": 512,
+          "context_window_effective": 512
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "INFERRED_NOT_RETAINED"
+      }
+    ],
+    "restored_context": [
+      {
+        "trial": 1,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"ESCALATE\",\n  \"rationale\": \"Explicit positive watchlist screening finding\",\n  \"evidence_cited\": [\n    \"<AML_SCREENING_FACT_7F3A>\",\n    \"SCREENING_STATUS=HIT\",\n    \"SCREENING_RISK=HIGH\",\n    \"SCREENING_ENTITY=WATCHLIST_MATCH\"\n  ]\n}",
+          "parsed": {
+            "disposition": "ESCALATE",
+            "rationale": "Explicit positive watchlist screening finding",
+            "evidence_cited": [
+              "<AML_SCREENING_FACT_7F3A>",
+              "SCREENING_STATUS=HIT",
+              "SCREENING_RISK=HIGH",
+              "SCREENING_ENTITY=WATCHLIST_MATCH"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 1079,
+          "output_eval_count": 76,
+          "total_duration_ns": 6927391959,
+          "load_duration_ns": 1861863500,
+          "context_window_requested": 8192,
+          "context_window_effective": 8192
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"HIT\",\n  \"evidence_quote\": \"SCREENING_STATUS=HIT\"\n}",
+          "parsed": {
+            "screening_status": "HIT",
+            "evidence_quote": "SCREENING_STATUS=HIT"
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 951,
+          "output_eval_count": 29,
+          "total_duration_ns": 3038829542,
+          "load_duration_ns": 6251709,
+          "context_window_requested": 8192,
+          "context_window_effective": 8192
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "VERIFIED_BY_SEPARATE_RECALL"
+      },
+      {
+        "trial": 2,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"ESCALATE\",\n  \"rationale\": \"Explicit positive watchlist screening finding\",\n  \"evidence_cited\": [\n    \"<AML_SCREENING_FACT_7F3A>\",\n    \"SCREENING_STATUS=HIT\",\n    \"SCREENING_RISK=HIGH\",\n    \"SCREENING_ENTITY=WATCHLIST_MATCH\"\n  ]\n}",
+          "parsed": {
+            "disposition": "ESCALATE",
+            "rationale": "Explicit positive watchlist screening finding",
+            "evidence_cited": [
+              "<AML_SCREENING_FACT_7F3A>",
+              "SCREENING_STATUS=HIT",
+              "SCREENING_RISK=HIGH",
+              "SCREENING_ENTITY=WATCHLIST_MATCH"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 1079,
+          "output_eval_count": 76,
+          "total_duration_ns": 3010069125,
+          "load_duration_ns": 801417,
+          "context_window_requested": 8192,
+          "context_window_effective": 8192
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"HIT\",\n  \"evidence_quote\": \"SCREENING_STATUS=HIT\"\n}",
+          "parsed": {
+            "screening_status": "HIT",
+            "evidence_quote": "SCREENING_STATUS=HIT"
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 951,
+          "output_eval_count": 29,
+          "total_duration_ns": 1187570125,
+          "load_duration_ns": 807083,
+          "context_window_requested": 8192,
+          "context_window_effective": 8192
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "VERIFIED_BY_SEPARATE_RECALL"
+      },
+      {
+        "trial": 3,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"ESCALATE\",\n  \"rationale\": \"Explicit positive watchlist screening finding\",\n  \"evidence_cited\": [\n    \"<AML_SCREENING_FACT_7F3A>\",\n    \"SCREENING_STATUS=HIT\",\n    \"SCREENING_RISK=HIGH\",\n    \"SCREENING_ENTITY=WATCHLIST_MATCH\"\n  ]\n}",
+          "parsed": {
+            "disposition": "ESCALATE",
+            "rationale": "Explicit positive watchlist screening finding",
+            "evidence_cited": [
+              "<AML_SCREENING_FACT_7F3A>",
+              "SCREENING_STATUS=HIT",
+              "SCREENING_RISK=HIGH",
+              "SCREENING_ENTITY=WATCHLIST_MATCH"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 1079,
+          "output_eval_count": 76,
+          "total_duration_ns": 3004726083,
+          "load_duration_ns": 3181750,
+          "context_window_requested": 8192,
+          "context_window_effective": 8192
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"HIT\",\n  \"evidence_quote\": \"SCREENING_STATUS=HIT\"\n}",
+          "parsed": {
+            "screening_status": "HIT",
+            "evidence_quote": "SCREENING_STATUS=HIT"
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 951,
+          "output_eval_count": 29,
+          "total_duration_ns": 1184913625,
+          "load_duration_ns": 969750,
+          "context_window_requested": 8192,
+          "context_window_effective": 8192
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "VERIFIED_BY_SEPARATE_RECALL"
+      },
+      {
+        "trial": 4,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"ESCALATE\",\n  \"rationale\": \"Explicit positive watchlist screening finding\",\n  \"evidence_cited\": [\n    \"<AML_SCREENING_FACT_7F3A>\",\n    \"SCREENING_STATUS=HIT\",\n    \"SCREENING_RISK=HIGH\",\n    \"SCREENING_ENTITY=WATCHLIST_MATCH\"\n  ]\n}",
+          "parsed": {
+            "disposition": "ESCALATE",
+            "rationale": "Explicit positive watchlist screening finding",
+            "evidence_cited": [
+              "<AML_SCREENING_FACT_7F3A>",
+              "SCREENING_STATUS=HIT",
+              "SCREENING_RISK=HIGH",
+              "SCREENING_ENTITY=WATCHLIST_MATCH"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 1079,
+          "output_eval_count": 76,
+          "total_duration_ns": 3004314584,
+          "load_duration_ns": 702375,
+          "context_window_requested": 8192,
+          "context_window_effective": 8192
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"HIT\",\n  \"evidence_quote\": \"SCREENING_STATUS=HIT\"\n}",
+          "parsed": {
+            "screening_status": "HIT",
+            "evidence_quote": "SCREENING_STATUS=HIT"
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 951,
+          "output_eval_count": 29,
+          "total_duration_ns": 1181437708,
+          "load_duration_ns": 691000,
+          "context_window_requested": 8192,
+          "context_window_effective": 8192
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "VERIFIED_BY_SEPARATE_RECALL"
+      },
+      {
+        "trial": 5,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"ESCALATE\",\n  \"rationale\": \"Explicit positive watchlist screening finding\",\n  \"evidence_cited\": [\n    \"<AML_SCREENING_FACT_7F3A>\",\n    \"SCREENING_STATUS=HIT\",\n    \"SCREENING_RISK=HIGH\",\n    \"SCREENING_ENTITY=WATCHLIST_MATCH\"\n  ]\n}",
+          "parsed": {
+            "disposition": "ESCALATE",
+            "rationale": "Explicit positive watchlist screening finding",
+            "evidence_cited": [
+              "<AML_SCREENING_FACT_7F3A>",
+              "SCREENING_STATUS=HIT",
+              "SCREENING_RISK=HIGH",
+              "SCREENING_ENTITY=WATCHLIST_MATCH"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 1079,
+          "output_eval_count": 76,
+          "total_duration_ns": 2998173083,
+          "load_duration_ns": 719833,
+          "context_window_requested": 8192,
+          "context_window_effective": 8192
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"HIT\",\n  \"evidence_quote\": \"SCREENING_STATUS=HIT\"\n}",
+          "parsed": {
+            "screening_status": "HIT",
+            "evidence_quote": "SCREENING_STATUS=HIT"
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 951,
+          "output_eval_count": 29,
+          "total_duration_ns": 1202092292,
+          "load_duration_ns": 754542,
+          "context_window_requested": 8192,
+          "context_window_effective": 8192
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "VERIFIED_BY_SEPARATE_RECALL"
+      },
+      {
+        "trial": 6,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"ESCALATE\",\n  \"rationale\": \"Explicit positive watchlist screening finding\",\n  \"evidence_cited\": [\n    \"<AML_SCREENING_FACT_7F3A>\",\n    \"SCREENING_STATUS=HIT\",\n    \"SCREENING_RISK=HIGH\",\n    \"SCREENING_ENTITY=WATCHLIST_MATCH\"\n  ]\n}",
+          "parsed": {
+            "disposition": "ESCALATE",
+            "rationale": "Explicit positive watchlist screening finding",
+            "evidence_cited": [
+              "<AML_SCREENING_FACT_7F3A>",
+              "SCREENING_STATUS=HIT",
+              "SCREENING_RISK=HIGH",
+              "SCREENING_ENTITY=WATCHLIST_MATCH"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 1079,
+          "output_eval_count": 76,
+          "total_duration_ns": 3006541334,
+          "load_duration_ns": 919875,
+          "context_window_requested": 8192,
+          "context_window_effective": 8192
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"HIT\",\n  \"evidence_quote\": \"SCREENING_STATUS=HIT\"\n}",
+          "parsed": {
+            "screening_status": "HIT",
+            "evidence_quote": "SCREENING_STATUS=HIT"
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 951,
+          "output_eval_count": 29,
+          "total_duration_ns": 1182091666,
+          "load_duration_ns": 3547416,
+          "context_window_requested": 8192,
+          "context_window_effective": 8192
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "VERIFIED_BY_SEPARATE_RECALL"
+      },
+      {
+        "trial": 7,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"ESCALATE\",\n  \"rationale\": \"Explicit positive watchlist screening finding\",\n  \"evidence_cited\": [\n    \"<AML_SCREENING_FACT_7F3A>\",\n    \"SCREENING_STATUS=HIT\",\n    \"SCREENING_RISK=HIGH\",\n    \"SCREENING_ENTITY=WATCHLIST_MATCH\"\n  ]\n}",
+          "parsed": {
+            "disposition": "ESCALATE",
+            "rationale": "Explicit positive watchlist screening finding",
+            "evidence_cited": [
+              "<AML_SCREENING_FACT_7F3A>",
+              "SCREENING_STATUS=HIT",
+              "SCREENING_RISK=HIGH",
+              "SCREENING_ENTITY=WATCHLIST_MATCH"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 1079,
+          "output_eval_count": 76,
+          "total_duration_ns": 3010253417,
+          "load_duration_ns": 736375,
+          "context_window_requested": 8192,
+          "context_window_effective": 8192
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"HIT\",\n  \"evidence_quote\": \"SCREENING_STATUS=HIT\"\n}",
+          "parsed": {
+            "screening_status": "HIT",
+            "evidence_quote": "SCREENING_STATUS=HIT"
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 951,
+          "output_eval_count": 29,
+          "total_duration_ns": 1185090250,
+          "load_duration_ns": 740916,
+          "context_window_requested": 8192,
+          "context_window_effective": 8192
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "VERIFIED_BY_SEPARATE_RECALL"
+      },
+      {
+        "trial": 8,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"ESCALATE\",\n  \"rationale\": \"Explicit positive watchlist screening finding\",\n  \"evidence_cited\": [\n    \"<AML_SCREENING_FACT_7F3A>\",\n    \"SCREENING_STATUS=HIT\",\n    \"SCREENING_RISK=HIGH\",\n    \"SCREENING_ENTITY=WATCHLIST_MATCH\"\n  ]\n}",
+          "parsed": {
+            "disposition": "ESCALATE",
+            "rationale": "Explicit positive watchlist screening finding",
+            "evidence_cited": [
+              "<AML_SCREENING_FACT_7F3A>",
+              "SCREENING_STATUS=HIT",
+              "SCREENING_RISK=HIGH",
+              "SCREENING_ENTITY=WATCHLIST_MATCH"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 1079,
+          "output_eval_count": 76,
+          "total_duration_ns": 3017820500,
+          "load_duration_ns": 733959,
+          "context_window_requested": 8192,
+          "context_window_effective": 8192
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"HIT\",\n  \"evidence_quote\": \"SCREENING_STATUS=HIT\"\n}",
+          "parsed": {
+            "screening_status": "HIT",
+            "evidence_quote": "SCREENING_STATUS=HIT"
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 951,
+          "output_eval_count": 29,
+          "total_duration_ns": 1186521625,
+          "load_duration_ns": 797333,
+          "context_window_requested": 8192,
+          "context_window_effective": 8192
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "VERIFIED_BY_SEPARATE_RECALL"
+      },
+      {
+        "trial": 9,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"ESCALATE\",\n  \"rationale\": \"Explicit positive watchlist screening finding\",\n  \"evidence_cited\": [\n    \"<AML_SCREENING_FACT_7F3A>\",\n    \"SCREENING_STATUS=HIT\",\n    \"SCREENING_RISK=HIGH\",\n    \"SCREENING_ENTITY=WATCHLIST_MATCH\"\n  ]\n}",
+          "parsed": {
+            "disposition": "ESCALATE",
+            "rationale": "Explicit positive watchlist screening finding",
+            "evidence_cited": [
+              "<AML_SCREENING_FACT_7F3A>",
+              "SCREENING_STATUS=HIT",
+              "SCREENING_RISK=HIGH",
+              "SCREENING_ENTITY=WATCHLIST_MATCH"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 1079,
+          "output_eval_count": 76,
+          "total_duration_ns": 3018078084,
+          "load_duration_ns": 4082334,
+          "context_window_requested": 8192,
+          "context_window_effective": 8192
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"HIT\",\n  \"evidence_quote\": \"SCREENING_STATUS=HIT\"\n}",
+          "parsed": {
+            "screening_status": "HIT",
+            "evidence_quote": "SCREENING_STATUS=HIT"
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 951,
+          "output_eval_count": 29,
+          "total_duration_ns": 1184586500,
+          "load_duration_ns": 775750,
+          "context_window_requested": 8192,
+          "context_window_effective": 8192
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "VERIFIED_BY_SEPARATE_RECALL"
+      },
+      {
+        "trial": 10,
+        "seed": 42,
+        "decision": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"disposition\": \"ESCALATE\",\n  \"rationale\": \"Explicit positive watchlist screening finding\",\n  \"evidence_cited\": [\n    \"<AML_SCREENING_FACT_7F3A>\",\n    \"SCREENING_STATUS=HIT\",\n    \"SCREENING_RISK=HIGH\",\n    \"SCREENING_ENTITY=WATCHLIST_MATCH\"\n  ]\n}",
+          "parsed": {
+            "disposition": "ESCALATE",
+            "rationale": "Explicit positive watchlist screening finding",
+            "evidence_cited": [
+              "<AML_SCREENING_FACT_7F3A>",
+              "SCREENING_STATUS=HIT",
+              "SCREENING_RISK=HIGH",
+              "SCREENING_ENTITY=WATCHLIST_MATCH"
+            ]
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 1079,
+          "output_eval_count": 76,
+          "total_duration_ns": 3010168917,
+          "load_duration_ns": 745459,
+          "context_window_requested": 8192,
+          "context_window_effective": 8192
+        },
+        "recall": {
+          "execution_status": "SUCCESS",
+          "raw_response": "{\n  \"screening_status\": \"HIT\",\n  \"evidence_quote\": \"SCREENING_STATUS=HIT\"\n}",
+          "parsed": {
+            "screening_status": "HIT",
+            "evidence_quote": "SCREENING_STATUS=HIT"
+          },
+          "parse_status": "PARSED",
+          "error": null,
+          "prompt_eval_count": 951,
+          "output_eval_count": 29,
+          "total_duration_ns": 1184995458,
+          "load_duration_ns": 734458,
+          "context_window_requested": 8192,
+          "context_window_effective": 8192
+        },
+        "evidence_supplied": [
+          "screening",
+          "transaction",
+          "kyc"
+        ],
+        "evidence_cited_screening": true,
+        "evidence_visibility": "VERIFIED_BY_SEPARATE_RECALL"
+      }
+    ]
+  }
+}

@@ -213,7 +213,6 @@ except ClientPipelineError as exc:
     st.error(f"Client pipeline definition rejected: {exc}")
     st.stop()
 pipeline_system = pipeline_definition["system"]
-pipeline_policy = pipeline_definition["policy"]
 st.success("Client pipeline loaded")
 st.markdown(
     '<p class="section-help">Provided once by the client: its agents, who hands off to whom, what each agent is '
@@ -228,20 +227,6 @@ st.dataframe([{
     "receives from": ", ".join(pipeline_system["topology"].get(agent["id"], [])) or "root",
     "declared permissions": ", ".join(pipeline_system["permissions"].get(agent["id"], [])),
 } for agent in pipeline_system["agents"]], hide_index=True, width="stretch")
-with st.expander("Client policies and raw definition", expanded=False):
-    for key in ("graph", "action"):
-        document = pipeline_policy[key]
-        st.markdown(
-            f"**{esc(document.get('name', key))}** (default: `{esc(document.get('default_action', '-'))}`)"
-        )
-        st.dataframe([{
-            "rule": rule.get("name"),
-            "stage": rule.get("stage"),
-            "condition": rule.get("condition"),
-            "action": rule.get("action"),
-            "priority": rule.get("priority"),
-        } for rule in document.get("rules", [])], hide_index=True, width="stretch")
-    st.code(PIPELINE_PATH.read_text(encoding="utf-8"), language="json")
 
 # --------------------------------------------------------------------------- live case (dynamic)
 st.markdown('<p class="section-label">LIVE CASE · ENTERED NOW</p>', unsafe_allow_html=True)
@@ -471,7 +456,6 @@ if submitted:
             "review": review,
             "integrity": check_graph_integrity(outcome),
             "agt_live": governor.agt_live,
-            "payload_json": payload_json,
             "subject_label": subject_label,
             "subject_value": subject_value,
             "final_agent": ingested.description.final_agent,
@@ -521,20 +505,6 @@ consumed_version = (
 action = str(review.policy_decision.get("action", "deny"))
 action_label = {"allow": "CONTINUE", "require_approval": "HUMAN REVIEW", "deny": "BLOCK"}.get(action, action.upper())
 verdict_css = {"allow": "continue", "require_approval": "review", "deny": "block"}.get(action, "block")
-
-# --------------------------------------------------------------------------- ingested client payload
-st.markdown('<p class="section-label">GOVERNED PAYLOAD · DEFINITION + LIVE RUN</p>', unsafe_allow_html=True)
-st.markdown(
-    f'<p class="section-help">The framework governed the case for <b>{esc(result["subject_value"])}</b> flowing through '
-    f'the client\'s pipeline. <code>system</code> and <code>policy</code> come from '
-    f'the client pipeline definition; <code>run</code> and <code>records</code> come from this live '
-    'case\'s simulated run. The governance below ran only on this ingested payload.</p>',
-    unsafe_allow_html=True,
-)
-with st.expander(
-    "Governed payload: client pipeline definition + this case's run", expanded=False
-):
-    st.code(result["payload_json"], language="json")
 
 # --------------------------------------------------------------------------- event stream
 st.markdown('<p class="section-label">LIVE GOVERNANCE RUN</p>', unsafe_allow_html=True)
@@ -620,11 +590,11 @@ st.markdown(
 st.markdown('<p class="section-label">WHERE & WHY</p>', unsafe_allow_html=True)
 st.markdown(
     '<p class="section-help">The framework makes the decision below from its generic stages; '
-    'the AML case is only the input it governed.</p>',
+    f'the {esc(result["domain"])} case is the client input it governed.</p>',
     unsafe_allow_html=True,
 )
 if integrity.passed:
-    st.success("Framework trace integrity: no conflict. The screening and decision agents used consistent state.")
+    st.success("No governance failure: the pipeline agents used consistent state and the case passed its checks.")
 else:
     if producer is not None:
         st.markdown(
@@ -694,33 +664,3 @@ st.markdown(
     f'</div></div>',
     unsafe_allow_html=True,
 )
-
-with st.expander("Audit and proof", expanded=False):
-    st.markdown("#### Normalized PipelineTrace")
-    st.dataframe([{
-        "node": step.node_id,
-        "agent": step.agent,
-        "action": step.action_type,
-        "declared permissions": ", ".join(sorted(step.allowed_actions)),
-        "parents": ", ".join(step.received_from) or "root",
-        "finding": step.finding,
-        "emitted version": step.finding_version,
-        "received findings": json.dumps(step.received_findings_by_parent),
-        "received versions": json.dumps(step.received_versions_by_parent),
-        "disposition": step.disposition or "",
-    } for step in review.outcome.steps], hide_index=True, width="stretch")
-    st.markdown("#### Branch attribution")
-    st.dataframe([{
-        "node": check.node_id,
-        "agent": check.agent,
-        "reported": check.reported,
-        "expected": check.recomputed,
-        "matches": check.matches,
-        "detail": check.detail,
-    } for check in review.attribution.branch_checks], hide_index=True, width="stretch")
-    st.markdown("#### Resolver AuthorityDecision")
-    st.json(review.authority_decision)
-    st.markdown("#### Final AGT PolicyDecision")
-    st.json(review.policy_decision)
-    st.markdown("#### Audit evidence")
-    st.dataframe(list(review.audit), hide_index=True, width="stretch")
