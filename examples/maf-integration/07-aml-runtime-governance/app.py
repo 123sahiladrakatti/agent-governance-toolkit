@@ -15,7 +15,8 @@ import pandas as pd
 import streamlit as st
 
 from agt_resolver import GraphGovernor
-from aml.client_payload import AML_RECORD_CODECS, AML_RUN_ENGINE, simulate_aml_case
+from aml.client_payload import AML_RECORD_CODECS, AML_RUN_ENGINE, simulate_aml_case, simulate_aml_case_llm
+from aml.llm_decision_agent import LLMDecisionConfig, LLMDecisionError
 from aml.correctness import AmlCorrectnessComponent
 from client_pipeline import (
     ClientPipelineError,
@@ -92,6 +93,15 @@ html,body,[class*="css"] { font-family:ui-sans-serif,system-ui,-apple-system,Bli
 .pill.live { color:var(--green); background:var(--green-bg); border:1px solid #b7dcc6; }
 .pill.fallback { color:var(--gold); background:var(--amber-bg); border:1px solid #ecd9ad; }
 .pill + .pill { margin-left:.4rem; }
+.pill.llm { color:var(--purple); background:var(--purple-bg); border:1px solid #cdbfe3; }
+.loss { border:1px solid #cdbfe3; background:var(--purple-bg); padding:1rem 1.1rem; margin:.8rem 0; }
+.loss h3 { margin:.1rem 0 .4rem; font-size:1.05rem; }
+.loss p { margin:.3rem 0; line-height:1.5; font-size:.9rem; }
+.loss table { width:100%; border-collapse:collapse; margin:.6rem 0; font-size:.85rem; }
+.loss th, .loss td { text-align:left; padding:.4rem .5rem; border-bottom:1px solid #ddd3ec; }
+.loss th { color:var(--muted); font-size:.72rem; text-transform:uppercase; }
+.loss .lost { color:var(--red); font-weight:700; }
+.loss .kept { color:var(--green); font-weight:700; }
 .stages { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:.5rem; }
 .stage { border:1px solid #bcd3e4; background:var(--blue-bg); padding:.7rem .75rem; font-size:.82rem; line-height:1.4; }
 .stage .num { font:700 .7rem ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--blue); }
@@ -255,37 +265,71 @@ if run_engine_fallback:
     )
 else:
     st.caption("Pipeline engine: langgraph (LangGraph StateGraph, deterministic agent nodes)")
+DECISION_MODES = {
+    "Deterministic": "deterministic",
+    "Real LLM (context-loss demo)": "llm-context-loss",
+}
+decision_mode = "deterministic"
+llm_config = LLMDecisionConfig()
 if selected_reference == "AML":
+    decision_mode = DECISION_MODES[st.radio(
+        "Decision agent",
+        tuple(DECISION_MODES),
+        horizontal=True,
+        help=(
+            "Deterministic: every agent is scripted; a watchlist name plants a stale screening view. "
+            "Real LLM: only the decision agent is a real Ollama LLM with a deliberately small context "
+            "window; the branch agents stay deterministic and nothing is planted."
+        ),
+    )]
+    if decision_mode == "llm-context-loss":
+        st.info(
+            f"Decision agent: real LLM (context-loss demo). {llm_config.model} via local Ollama with a "
+            f"constrained context window (num_ctx={llm_config.num_ctx}); the branch agents stay deterministic. "
+            "The case file reaches the decision agent in arrival order: the screening report comes first, then "
+            "the case activity log, then the transaction and KYC reports. The case file is longer than the "
+            "window, so Ollama keeps only its most recent part and the screening report genuinely falls out. "
+            "Each run makes several local Ollama calls and can take 15-30 seconds."
+        )
+    else:
+        st.caption("Decision agent: deterministic")
+    watchlist_hint = (
+        "Use a watchlist name to see a governance conflict; any other name runs clean. "
+        "A watchlist name creates a v2 hit while the final agent consumes stale v1 state."
+        if decision_mode == "deterministic" else
+        "In this mode the screening report falls out of the decision agent's window for every case. "
+        "With a watchlist name the agent's decision misses a real sanctions hit; with any other name its "
+        "decision happens to be right, but it was still made without the screening result."
+    )
     st.markdown(
         '<div class="watchlist"><b>Demo watchlist:</b> '
         + ' &middot; '.join(f'<code>{esc(name)}</code>' for name in sorted(SANCTIONS_WATCHLIST))
-        + '<br>Use a watchlist name to see a governance conflict; any other name runs clean. '
-        'A watchlist name creates a v2 hit while the final agent consumes stale v1 state.</div>',
+        + f'<br>{esc(watchlist_hint)}</div>',
         unsafe_allow_html=True,
     )
-    empty_transactions = pd.DataFrame({
-        "id": pd.Series(dtype="str"),
-        "date": pd.Series(dtype="datetime64[ns]"),
-        "type": pd.Series(dtype="str"),
-        "amount": pd.Series(dtype="float"),
-        "branch": pd.Series(dtype="str"),
+    default_transactions = pd.DataFrame({
+        "id": pd.Series(["T-001", "T-002"], dtype="str"),
+        "date": pd.Series(pd.to_datetime(["2026-01-05", "2026-01-06"]), dtype="datetime64[ns]"),
+        "type": pd.Series(["cash_deposit", "cash_deposit"], dtype="str"),
+        "amount": pd.Series([2_500.0, 1_500.0], dtype="float"),
+        "branch": pd.Series(["BR-01", "BR-01"], dtype="str"),
     })
     with st.form("aml-case-input"):
         c1, c2 = st.columns(2)
         with c1:
             customer_name = st.text_input("Customer name", placeholder="Enter customer name")
-            account_id = st.text_input("Account ID", placeholder="Enter account id")
+            account_id = st.text_input("Account ID", value="ACCT-DEMO-001")
         with c2:
-            occupation = st.text_input("Occupation", placeholder="Enter occupation")
+            occupation = st.text_input("Occupation", value="business owner")
             expected_cash = st.number_input(
-                "Expected monthly cash volume", min_value=0.0, value=0.0, step=500.0
+                "Expected monthly cash volume", min_value=0.0, value=8_000.0, step=500.0
             )
         monitoring_rule = st.text_input(
             "Monitoring rule", value="customer and transaction activity review"
         )
-        st.caption("Transactions: add at least one row.")
+        st.caption("Transactions: at least one row is required.")
         edited_transactions = st.data_editor(
-            empty_transactions,
+            default_transactions,
             num_rows="dynamic",
             hide_index=True,
             width="stretch",
@@ -367,8 +411,15 @@ if submitted:
             domain_records = Alert(
                 "AML-INTERACTIVE", account_id.strip(), transactions, customer, monitoring_rule.strip()
             )
-            stale_view = customer.name in SANCTIONS_WATCHLIST
-            case_run, case_records = simulate_aml_case(domain_records, stale_screening_view=stale_view)
+            llm_decision = None
+            if decision_mode == "llm-context-loss":
+                with st.spinner(
+                    f"Decision agent: real LLM ({llm_config.model}, num_ctx={llm_config.num_ctx}) is deciding the case"
+                ):
+                    case_run, case_records, llm_decision = simulate_aml_case_llm(domain_records, llm_config)
+            else:
+                stale_view = customer.name in SANCTIONS_WATCHLIST
+                case_run, case_records = simulate_aml_case(domain_records, stale_screening_view=stale_view)
             codecs = AML_RECORD_CODECS
             correctness_component = AmlCorrectnessComponent()
             subject_label, subject_value = "Customer", customer.name
@@ -387,6 +438,7 @@ if submitted:
             case_run, case_records = simulate_healthcare_case(
                 domain_records, stale_allergy_view=stale_view
             )
+            llm_decision = None
             codecs = HEALTHCARE_RECORD_CODECS
             correctness_component = HealthcareCorrectnessComponent()
             subject_label, subject_value = "Patient", domain_records.patient_name
@@ -425,16 +477,23 @@ if submitted:
             "final_agent": ingested.description.final_agent,
             "run_engine": run_engine,
             "run_engine_fallback": run_engine_fallback,
+            "decision_mode": decision_mode,
+            "llm_decision": llm_decision,
         }
         progress.progress(100, text="Governance decision complete")
         progress.empty()
+    except LLMDecisionError as exc:
+        st.error(f"The real-LLM decision agent failed, so nothing was governed: {exc}")
+        if exc.raw_output:
+            with st.expander("Raw decision-agent output", expanded=True):
+                st.code(exc.raw_output)
     except ClientPipelineError as exc:
         st.error(f"The client-pipeline payload was rejected at ingestion: {exc}")
     except (KeyError, TypeError, ValueError) as exc:
         st.error(f"The case could not be processed: {exc}")
 
 result = st.session_state.get("governance_review")
-if result is None or result["domain"] != selected_reference:
+if result is None or result["domain"] != selected_reference or result.get("decision_mode") != decision_mode:
     st.info("Enter a live case above to run it through the loaded client pipeline.")
     st.stop()
 
@@ -489,6 +548,15 @@ events: list[tuple[str, str, str, str, str]] = [
     (PLUG, f"Client agents run case ({result['domain']})", "RAN", "pass",
      f"Simulated {result['domain']} agents executed the live case through the client pipeline's topology "
      f"(engine: {result['run_engine']}{', FALLBACK' if result['run_engine_fallback'] else ''})."),
+    *(
+        [(PLUG, "Decision agent (real LLM)",
+          "LOST CONTEXT" if result["llm_decision"].not_consumed else "DECIDED",
+          "review" if result["llm_decision"].not_consumed else "pass",
+          f"{result['llm_decision'].model} with num_ctx={result['llm_decision'].num_ctx} kept "
+          f"{result['llm_decision'].kept_tokens} prompt tokens and decided {result['llm_decision'].disposition}; "
+          f"not in its context: {', '.join(result['llm_decision'].not_consumed) or 'none'}.")]
+        if result.get("llm_decision") is not None else []
+    ),
     (FW, "JSON ingestion", "PASS", "pass",
      f"Definition + live run validated into a PipelineTrace of {len(review.outcome.steps)} agent steps; "
      "permissions and policies taken from the client pipeline definition."),
@@ -538,6 +606,10 @@ engine_pill = (
     f'<span class="pill fallback">PIPELINE ENGINE: {esc(result["run_engine"]).upper()} (FALLBACK)</span>'
     if result["run_engine_fallback"]
     else f'<span class="pill live">PIPELINE ENGINE: {esc(result["run_engine"]).upper()}</span>'
+) + (
+    '<span class="pill llm">DECISION AGENT: REAL LLM (CONTEXT-LOSS DEMO)</span>'
+    if result.get("llm_decision") is not None
+    else '<span class="pill live">DECISION AGENT: DETERMINISTIC</span>'
 )
 st.markdown(
     f'<div class="simulator">{engine_pill}{event_html}</div>',
@@ -564,6 +636,46 @@ else:
             f'</div>',
             unsafe_allow_html=True,
         )
+
+llm_run = result.get("llm_decision")
+if llm_run is not None:
+    window_text = {True: '<span class="kept">inside</span>', False: '<span class="lost">outside</span>',
+                   None: "unmeasured"}
+    report_rows = "".join(
+        f"<tr><td>{esc(agent)}</td><td>{esc(steps[agent].finding)} · v{steps[agent].finding_version}</td>"
+        f"<td>{window_text[llm_run.in_window.get(agent)]}</td>"
+        f"<td>{esc(llm_run.consumed.get(agent, 'not present (lost)'))}</td></tr>"
+        for agent in llm_run.in_window
+    )
+    nemo_decision = next((c for c in review.content_checks if c["agent"] == result["final_agent"]), None)
+    nemo_text = (
+        f"NeMo ran on the decision agent's output with the configured rail ({nemo_decision['rail']}) and "
+        f"returned: {nemo_decision['reason']} That rail checks for prompt injection and sees only the agent's "
+        "own output, so it does not judge grounding; the catch here comes from the deterministic trace check."
+        if nemo_decision else "NeMo did not run on the decision agent's output."
+    )
+    st.markdown(
+        '<div class="loss"><h3>Real context loss: the decision agent is a real LLM with a constrained window</h3>'
+        f'<p>{esc(llm_run.model)} ran with <b>num_ctx={llm_run.num_ctx}</b>. Ollama kept only the last '
+        f'<b>{llm_run.kept_tokens}</b> prompt tokens'
+        + (" because the case file was longer than the window" if llm_run.prompt_truncated else "")
+        + '. The table compares what each branch emitted, whether that report was inside the kept window '
+        "(measured with Ollama's own token counts), and what the agent itself said it saw.</p>"
+        '<table><tr><th>Branch</th><th>Emitted</th><th>In agent window</th><th>Agent reported seeing</th></tr>'
+        f'{report_rows}</table>'
+        f'<p><b>Agent decided:</b> {esc(llm_run.disposition)} &nbsp;·&nbsp; '
+        f'<b>Records require:</b> {esc(review.attribution.expected_disposition)}</p>'
+        '<p>The screening finding lives in the trace and the records, outside the agent. The framework compares '
+        "what the decision agent consumed against what each parent emitted, so it catches the lost finding "
+        "whether or not the agent's answer happens to be right.</p>"
+        f'<p>{esc(nemo_text)}</p></div>',
+        unsafe_allow_html=True,
+    )
+    with st.expander("Decision agent prompt and raw output", expanded=False):
+        st.markdown("**Full case file sent to the agent** (Ollama kept only the tail that fits the window)")
+        st.code(llm_run.prompt)
+        st.markdown("**Raw model output**")
+        st.code(llm_run.raw_output)
 
 origin = (
     f"{review.attribution.origin_node or '-'} · {review.attribution.origin_agent}"
