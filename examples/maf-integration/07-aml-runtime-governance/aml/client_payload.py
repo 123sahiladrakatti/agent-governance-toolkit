@@ -55,6 +55,20 @@ def simulate_aml_case(alert: Alert, stale_screening_view: bool = False) -> tuple
     return run, encode_alert(alert)
 
 
+def simulate_aml_case_llm(alert: Alert, llm_config: Any = None) -> tuple[dict[str, Any], dict[str, Any], Any]:
+    """Run the AML agents with a real-LLM decision agent; return ``(run, records, LLMDecision)``.
+
+    Branch agents stay deterministic. Nothing is planted: whether the decision
+    agent consumed each branch finding depends only on its context window.
+    """
+
+    from aml.langgraph_pipeline import build_llm_context_loss_diamond
+
+    steps, decision = build_llm_context_loss_diamond(alert, llm_config)
+    run = run_to_json(steps, run_id=alert.alert_id, resource_id=f"aml-alert:{alert.alert_id}")
+    return run, encode_alert(alert), decision
+
+
 def build_aml_client_payload(alert: Alert, stale_screening_view: bool = False) -> dict[str, Any]:
     """Run the AML example agents and return the client-pipeline JSON they would send."""
 
@@ -69,4 +83,11 @@ def build_aml_client_payload(alert: Alert, stale_screening_view: bool = False) -
     )
 
 
-__all__ = ["AML_RECORD_CODECS", "AML_ROLES", "AML_RUN_ENGINE", "build_aml_client_payload", "simulate_aml_case"]
+__all__ = [
+    "AML_RECORD_CODECS",
+    "AML_ROLES",
+    "AML_RUN_ENGINE",
+    "build_aml_client_payload",
+    "simulate_aml_case",
+    "simulate_aml_case_llm",
+]

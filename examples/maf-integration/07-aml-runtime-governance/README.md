@@ -34,6 +34,14 @@ python3 -m pip install -r requirements.txt
 python3 -m streamlit run app.py
 ```
 
+The AML "Real LLM (context-loss demo)" decision mode reads optional local settings from a `.env` file in this folder (it is gitignored). The app re-reads it on every run, so edit a value and run the case again; a variable already set in your terminal takes precedence.
+
+```bash
+AML_LLM_NUM_CTX=1024      # demo: the case file overflows the window; use 8192 for the full-context control
+AML_LLM_MODEL=qwen2.5:3b  # Ollama model for the decision agent
+# OLLAMA_URL=http://localhost:11434
+```
+
 Run tests with:
 
 ```bash

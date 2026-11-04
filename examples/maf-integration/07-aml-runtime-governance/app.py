@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 from datetime import date, datetime, time
 from pathlib import Path
 
@@ -39,6 +40,11 @@ from healthcare.client_payload import (
 )
 from healthcare.correctness import HealthcareCorrectnessComponent
 from healthcare.system import HealthcareCase, MEDICATION_ALLERGENS
+from env_file import load_env_file
+
+# Local settings (e.g. AML_LLM_NUM_CTX) from .env, re-read on every run so edits apply without a restart.
+ENV_FILE = Path(__file__).parent / ".env"
+env_from_file = load_env_file(ENV_FILE)
 
 
 st.set_page_config(page_title="Runtime Agent Governance", page_icon="◆", layout="wide")
@@ -269,12 +275,22 @@ if selected_reference == "AML":
     )]
     if decision_mode == "llm-context-loss":
         st.info(
-            f"Decision agent: real LLM (context-loss demo). {llm_config.model} via local Ollama with a "
-            f"constrained context window (num_ctx={llm_config.num_ctx}); the branch agents stay deterministic. "
+            f"Decision agent: real LLM (context-loss demo). {llm_config.model} via local Ollama with "
+            f"context window num_ctx={llm_config.num_ctx} (the demo uses 1024, which the case file overflows); "
+            "the branch agents stay deterministic. "
             "The case file reaches the decision agent in arrival order: the screening report comes first, then "
-            "the case activity log, then the transaction and KYC reports. The case file is longer than the "
-            "window, so Ollama keeps only its most recent part and the screening report genuinely falls out. "
+            "the case activity log, then the transaction and KYC reports. When the case file is longer than the "
+            "window, Ollama keeps only its most recent part and the screening report genuinely falls out. "
             "Each run makes several local Ollama calls and can take 15-30 seconds."
+        )
+        llm_keys = ("AML_LLM_MODEL", "AML_LLM_NUM_CTX", "OLLAMA_URL")
+        sources = [
+            f"{key}={os.environ[key]} ({'.env' if key in env_from_file else 'terminal'})"
+            for key in llm_keys if key in os.environ
+        ]
+        st.caption(
+            "LLM settings: " + (", ".join(sources) if sources else "built-in defaults")
+            + f". Edit {ENV_FILE.name} and run the case again to change them."
         )
     else:
         st.caption("Decision agent: deterministic")
