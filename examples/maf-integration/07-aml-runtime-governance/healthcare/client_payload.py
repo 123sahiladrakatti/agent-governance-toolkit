@@ -149,6 +149,23 @@ def simulate_healthcare_case(
     return run, encode_healthcare_case(case)
 
 
+def simulate_healthcare_case_llm(
+    case: HealthcareCase,
+    llm_config: Any = None,
+) -> tuple[dict[str, Any], dict[str, Any], Any]:
+    """Run the healthcare agents with a real-LLM care-decision agent; return ``(run, records, LLMDecision)``.
+
+    Review agents stay deterministic. Nothing is planted: whether the care-decision
+    agent consumed each review finding depends only on its context window.
+    """
+
+    from healthcare.langgraph_pipeline import build_llm_context_loss_care_path
+
+    steps, decision = build_llm_context_loss_care_path(case, llm_config)
+    run = run_to_json(steps, run_id=case.case_id, resource_id=f"healthcare-case:{case.case_id}")
+    return run, encode_healthcare_case(case), decision
+
+
 __all__ = [
     "HEALTHCARE_RECORD_CODECS",
     "HEALTHCARE_RUN_ENGINE",
@@ -159,4 +176,5 @@ __all__ = [
     "coverage_finding",
     "expected_disposition",
     "simulate_healthcare_case",
+    "simulate_healthcare_case_llm",
 ]

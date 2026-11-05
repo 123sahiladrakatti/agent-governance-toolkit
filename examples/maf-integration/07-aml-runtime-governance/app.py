@@ -17,7 +17,9 @@ import streamlit as st
 
 from agt_resolver import GraphGovernor
 from aml.client_payload import AML_RECORD_CODECS, AML_RUN_ENGINE, simulate_aml_case, simulate_aml_case_llm
-from aml.llm_decision_agent import LLMDecisionConfig, LLMDecisionError
+from aml.llm_decision_agent import default_config as aml_llm_config
+from healthcare.llm_decision_agent import default_config as healthcare_llm_config
+from llm_decision import LLMDecisionError
 from aml.correctness import AmlCorrectnessComponent
 from client_pipeline import (
     ClientPipelineError,
@@ -37,6 +39,7 @@ from healthcare.client_payload import (
     HEALTHCARE_RECORD_CODECS,
     allergy_finding,
     simulate_healthcare_case,
+    simulate_healthcare_case_llm,
 )
 from healthcare.correctness import HealthcareCorrectnessComponent
 from healthcare.system import HealthcareCase, MEDICATION_ALLERGENS
@@ -260,40 +263,63 @@ DECISION_MODES = {
     "Deterministic": "deterministic",
     "Real LLM (context-loss demo)": "llm-context-loss",
 }
-decision_mode = "deterministic"
-llm_config = LLMDecisionConfig()
+# Per-domain wording for the real-LLM decision agent; the machinery is shared (llm_decision.py).
+LLM_DEMO = {
+    "AML": {
+        "config": aml_llm_config,
+        "prefix": "AML_LLM",
+        "agent": "decision agent",
+        "file": "case file",
+        "planted": "a watchlist name plants a stale screening view",
+        "order": "the screening report comes first, then the case activity log, then the transaction and KYC reports",
+        "lost": "screening report",
+    },
+    "Healthcare": {
+        "config": healthcare_llm_config,
+        "prefix": "HEALTHCARE_LLM",
+        "agent": "care-decision agent",
+        "file": "care file",
+        "planted": "a medication with its matching allergy plants a stale allergy view",
+        "order": "the allergy-safety report comes first, then the care coordination log, then the medication "
+                 "and coverage reports",
+        "lost": "allergy-safety report",
+    },
+}
+demo = LLM_DEMO[selected_reference]
+llm_config = demo["config"]()
+decision_mode = DECISION_MODES[st.radio(
+    "Decision agent",
+    tuple(DECISION_MODES),
+    horizontal=True,
+    help=(
+        f"Deterministic: every agent is scripted; {demo['planted']}. "
+        f"Real LLM: only the {demo['agent']} is a real Ollama LLM with a deliberately small context "
+        "window; the other agents stay deterministic and nothing is planted."
+    ),
+)]
+if decision_mode == "llm-context-loss":
+    st.info(
+        f"{demo['agent'].capitalize()}: real LLM (context-loss demo). {llm_config.model} via local Ollama with "
+        f"context window num_ctx={llm_config.num_ctx} (the demo uses 1024, which the {demo['file']} overflows); "
+        "the other agents stay deterministic. "
+        f"The {demo['file']} reaches the {demo['agent']} in arrival order: {demo['order']}. When the "
+        f"{demo['file']} is longer than the window, Ollama keeps only its most recent part and the "
+        f"{demo['lost']} genuinely falls out. "
+        "Each run makes several local Ollama calls and can take 15-60 seconds."
+    )
+    llm_keys = (f"{demo['prefix']}_MODEL", f"{demo['prefix']}_NUM_CTX", "OLLAMA_URL")
+    sources = [
+        f"{key}={os.environ[key]} ({'.env' if key in env_from_file else 'terminal'})"
+        for key in llm_keys if key in os.environ
+    ]
+    st.caption(
+        "LLM settings: " + (", ".join(sources) if sources else "built-in defaults")
+        + f" (model {llm_config.model}, num_ctx={llm_config.num_ctx}). "
+        f"Edit {ENV_FILE.name} and run the case again to change them."
+    )
+else:
+    st.caption("Decision agent: deterministic")
 if selected_reference == "AML":
-    decision_mode = DECISION_MODES[st.radio(
-        "Decision agent",
-        tuple(DECISION_MODES),
-        horizontal=True,
-        help=(
-            "Deterministic: every agent is scripted; a watchlist name plants a stale screening view. "
-            "Real LLM: only the decision agent is a real Ollama LLM with a deliberately small context "
-            "window; the branch agents stay deterministic and nothing is planted."
-        ),
-    )]
-    if decision_mode == "llm-context-loss":
-        st.info(
-            f"Decision agent: real LLM (context-loss demo). {llm_config.model} via local Ollama with "
-            f"context window num_ctx={llm_config.num_ctx} (the demo uses 1024, which the case file overflows); "
-            "the branch agents stay deterministic. "
-            "The case file reaches the decision agent in arrival order: the screening report comes first, then "
-            "the case activity log, then the transaction and KYC reports. When the case file is longer than the "
-            "window, Ollama keeps only its most recent part and the screening report genuinely falls out. "
-            "Each run makes several local Ollama calls and can take 15-30 seconds."
-        )
-        llm_keys = ("AML_LLM_MODEL", "AML_LLM_NUM_CTX", "OLLAMA_URL")
-        sources = [
-            f"{key}={os.environ[key]} ({'.env' if key in env_from_file else 'terminal'})"
-            for key in llm_keys if key in os.environ
-        ]
-        st.caption(
-            "LLM settings: " + (", ".join(sources) if sources else "built-in defaults")
-            + f". Edit {ENV_FILE.name} and run the case again to change them."
-        )
-    else:
-        st.caption("Decision agent: deterministic")
     watchlist_hint = (
         "Use a watchlist name to see a governance conflict; any other name runs clean. "
         "A watchlist name creates a v2 hit while the final agent consumes stale v1 state."
@@ -352,11 +378,18 @@ else:
         f'<code>{esc(medication)} → {esc(allergen)}</code>'
         for medication, allergen in MEDICATION_ALLERGENS.items()
     )
+    safety_hint = (
+        "Choose a medication with its matching allergy to see a governance conflict; any other "
+        "combination runs clean. A match creates a current v2 contraindication that the final care agent "
+        "receives as stale v1 context."
+        if decision_mode == "deterministic" else
+        "In this mode the allergy-safety report falls out of the care-decision agent's window for every case. "
+        "With a medication and its matching allergy the agent's decision misses a real contraindication; "
+        "otherwise its decision happens to be right, but it was still made without the allergy result."
+    )
     st.markdown(
         '<div class="watchlist"><b>Healthcare safety examples:</b> ' + examples
-        + '<br>Choose a medication with its matching allergy to see a governance conflict; any other '
-        'combination runs clean. A match creates a current v2 contraindication that the final care agent '
-        'receives as stale v1 context. Use synthetic data only.</div>',
+        + f'<br>{esc(safety_hint)} Use synthetic data only.</div>',
         unsafe_allow_html=True,
     )
     with st.form("healthcare-case-input"):
@@ -435,11 +468,17 @@ if submitted:
                 "HC-INTERACTIVE", patient_id.strip(), patient_name.strip(), int(patient_age),
                 diagnosis.strip(), medication, known_allergy, bool(coverage_authorized)
             )
-            stale_view = allergy_finding(domain_records)[1]
-            case_run, case_records = simulate_healthcare_case(
-                domain_records, stale_allergy_view=stale_view
-            )
             llm_decision = None
+            if decision_mode == "llm-context-loss":
+                with st.spinner(
+                    f"Care-decision agent: real LLM ({llm_config.model}, num_ctx={llm_config.num_ctx}) is deciding the case"
+                ):
+                    case_run, case_records, llm_decision = simulate_healthcare_case_llm(domain_records, llm_config)
+            else:
+                stale_view = allergy_finding(domain_records)[1]
+                case_run, case_records = simulate_healthcare_case(
+                    domain_records, stale_allergy_view=stale_view
+                )
             codecs = HEALTHCARE_RECORD_CODECS
             correctness_component = HealthcareCorrectnessComponent()
             subject_label, subject_value = "Patient", domain_records.patient_name
@@ -651,7 +690,7 @@ if llm_run is not None:
         f'{report_rows}</table>'
         f'<p><b>Agent decided:</b> {esc(llm_run.disposition)} &nbsp;·&nbsp; '
         f'<b>Records require:</b> {esc(review.attribution.expected_disposition)}</p>'
-        '<p>The screening finding lives in the trace and the records, outside the agent. The framework compares '
+        '<p>Each branch finding lives in the trace and the records, outside the agent. The framework compares '
         "what the decision agent consumed against what each parent emitted, so it catches the lost finding "
         "whether or not the agent's answer happens to be right.</p>"
         f'<p>{esc(nemo_text)}</p></div>',

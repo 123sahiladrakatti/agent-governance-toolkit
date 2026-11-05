@@ -8,7 +8,7 @@ from unittest import mock
 
 import httpx
 
-import aml.llm_decision_agent as llm_agent
+import llm_decision as llm_agent
 from agt_resolver import GraphGovernor
 from aml.client_payload import AML_RECORD_CODECS, simulate_aml_case, simulate_aml_case_llm
 from aml.langgraph_pipeline import build_langgraph_diamond

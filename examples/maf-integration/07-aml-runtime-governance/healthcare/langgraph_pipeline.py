@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import operator
 from functools import lru_cache
-from typing import Annotated, TypedDict
+from typing import Annotated, Any, Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
@@ -44,6 +44,11 @@ from healthcare.system import (
 from system_description import PipelineRunTrace, TraceStep, adapt_trace
 
 REVIEW_BRANCHES = (ALLERGY_AGENT, MEDICATION_AGENT, COVERAGE_AGENT)
+
+# Care-decision implementations. "deterministic" is the default demo; "llm-context-loss"
+# runs the care-decision agent as a real Ollama LLM with a small context window.
+DETERMINISTIC_DECISION = "deterministic"
+LLM_CONTEXT_LOSS_DECISION = "llm-context-loss"
 HEALTHCARE_ACTION = {
     INTAKE_AGENT: "route_care_request",
     ALLERGY_AGENT: "evaluate_allergy_safety",
@@ -62,6 +67,10 @@ class CarePathState(TypedDict):
     steps: Annotated[dict[str, TraceStep], operator.or_]
     # Order in which LangGraph executed the nodes (parallel branches share a superstep).
     executed: Annotated[list[str], operator.add]
+    decision_mode: str
+    llm_config: Optional[Any]
+    # Set by the LLM care-decision node: what the agent saw vs. decided (``LLMDecision``).
+    llm_decision: Optional[Any]
 
 
 def _step(agent: str, finding: str, case: HealthcareCase, flagged: bool = False, **extra) -> TraceStep:
@@ -102,9 +111,38 @@ def coverage_node(state: CarePathState) -> dict:
     ))
 
 
+def llm_care_decision_node(state: CarePathState) -> dict:
+    """Fan-in by a real LLM: record only the review findings the agent actually consumed."""
+
+    from healthcare.llm_decision_agent import run_llm_decision
+
+    case = state["case"]
+    branches = {agent: state["steps"][agent] for agent in REVIEW_BRANCHES}
+    decision = run_llm_decision(case, branches, state.get("llm_config"))
+    consumed = list(decision.consumed)
+    lost = ", ".join(decision.not_consumed)
+    finding = (
+        f"care-decision:{decision.disposition.lower()} (LLM decision agent; used {len(consumed)}/3 review reports"
+        + (f"; not in its context: {lost}" if lost else "")
+        + ")"
+    )
+    step = _step(
+        CARE_DECISION_AGENT,
+        finding,
+        case,
+        decision.disposition != "APPROVE_TREATMENT",
+        disposition=decision.disposition,
+        received_findings_by_parent=dict(decision.consumed),
+        received_versions_by_parent={agent: branches[agent].finding_version for agent in consumed},
+    )
+    return {**_write(CARE_DECISION_AGENT, step), "llm_decision": decision}
+
+
 def care_decision_node(state: CarePathState) -> dict:
     """Fan-in: merge the three review outputs as this agent's case-state view holds them."""
 
+    if state.get("decision_mode", DETERMINISTIC_DECISION) == LLM_CONTEXT_LOSS_DECISION:
+        return llm_care_decision_node(state)
     case = state["case"]
     view = {
         agent: {"finding": state["steps"][agent].finding, "version": state["steps"][agent].finding_version}
@@ -148,24 +186,28 @@ def build_care_path_graph():
     return builder.compile()
 
 
-def run_care_path_graph(case: HealthcareCase, stale_allergy_view: bool = False) -> CarePathState:
+def run_care_path_graph(
+    case: HealthcareCase,
+    stale_allergy_view: bool = False,
+    decision_mode: str = DETERMINISTIC_DECISION,
+    llm_config: Any = None,
+) -> CarePathState:
     """Execute the compiled graph for one case and return the final LangGraph state."""
 
+    if decision_mode not in (DETERMINISTIC_DECISION, LLM_CONTEXT_LOSS_DECISION):
+        raise ValueError(f"unsupported decision_mode: {decision_mode!r}")
     return build_care_path_graph().invoke({
         "case": case,
         "stale_allergy_view": stale_allergy_view,
         "steps": {},
         "executed": [],
+        "decision_mode": decision_mode,
+        "llm_config": llm_config,
+        "llm_decision": None,
     })
 
 
-def build_langgraph_healthcare_steps(
-    case: HealthcareCase,
-    stale_allergy_view: bool = False,
-) -> tuple[GraphStep, ...]:
-    """LangGraph counterpart of ``build_healthcare_steps``: same signature, same output."""
-
-    state = run_care_path_graph(case, stale_allergy_view)
+def _normalize(case: HealthcareCase, state: CarePathState) -> tuple[GraphStep, ...]:
     return adapt_trace(
         HEALTHCARE_SYSTEM_DESCRIPTION,
         PipelineRunTrace(
@@ -176,8 +218,32 @@ def build_langgraph_healthcare_steps(
     ).steps
 
 
+def build_langgraph_healthcare_steps(
+    case: HealthcareCase,
+    stale_allergy_view: bool = False,
+) -> tuple[GraphStep, ...]:
+    """LangGraph counterpart of ``build_healthcare_steps``: same signature, same output."""
+
+    return _normalize(case, run_care_path_graph(case, stale_allergy_view))
+
+
+def build_llm_context_loss_care_path(case: HealthcareCase, llm_config: Any = None) -> tuple[tuple[GraphStep, ...], Any]:
+    """Run the care path with deterministic reviews and a real-LLM care-decision agent.
+
+    Returns the normalized steps and the ``LLMDecision``. Nothing is planted: the
+    allergy review emits its current finding; whether the care-decision agent
+    consumed it depends only on the LLM's context window.
+    """
+
+    state = run_care_path_graph(case, decision_mode=LLM_CONTEXT_LOSS_DECISION, llm_config=llm_config)
+    return _normalize(case, state), state["llm_decision"]
+
+
 __all__ = [
+    "DETERMINISTIC_DECISION",
+    "LLM_CONTEXT_LOSS_DECISION",
     "CarePathState",
+    "build_llm_context_loss_care_path",
     "build_care_path_graph",
     "build_langgraph_healthcare_steps",
     "run_care_path_graph",
