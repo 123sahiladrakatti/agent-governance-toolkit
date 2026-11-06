@@ -82,6 +82,7 @@ class TraceStep:
     received_findings_by_parent: dict[str, str] = field(default_factory=dict)
     finding_version: int = 1
     received_versions_by_parent: dict[str, int] = field(default_factory=dict)
+    message: str | None = None
 
 
 @dataclass(frozen=True)
@@ -122,6 +123,7 @@ def adapt_trace(description: SystemDescription, trace: PipelineRunTrace) -> Grap
             received_findings_by_parent=step.received_findings_by_parent,
             finding_version=step.finding_version,
             received_versions_by_parent=step.received_versions_by_parent,
+            message=step.message,
         )
         for step in trace.steps
     )
@@ -158,6 +160,7 @@ def encode_graph_context(outcome: GraphOutcome, description: SystemDescription) 
             "received_findings_by_parent": dict(step.received_findings_by_parent),
             "finding_version": step.finding_version,
             "received_versions_by_parent": dict(step.received_versions_by_parent),
+            "message": step.message,
         } for step in outcome.steps],
     }
 
@@ -191,6 +194,7 @@ def decode_graph_context(context: dict[str, Any], description: SystemDescription
                 key: int(value)
                 for key, value in step.get("received_versions_by_parent", {}).items()
             },
+            message=step.get("message"),
         )
         for step in context["steps"]
     )

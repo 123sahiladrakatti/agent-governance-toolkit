@@ -41,6 +41,7 @@ AML_LLM_NUM_CTX=1024              # demo: the case file overflows the window; us
 AML_LLM_MODEL=qwen2.5:3b          # Ollama model for the AML decision agent
 HEALTHCARE_LLM_NUM_CTX=1024       # same for the healthcare care-decision agent
 HEALTHCARE_LLM_MODEL=llama3.1:8b  # qwen2.5:3b is not reliable for the healthcare care file
+HEALTHCARE_ALLERGY_LLM_MODEL=llama3.1:8b  # allergy-safety agent in the healthcare PII-leak demo
 # OLLAMA_URL=http://localhost:11434
 ```
 

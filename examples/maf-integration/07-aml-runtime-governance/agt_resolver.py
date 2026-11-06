@@ -434,6 +434,7 @@ class GraphGovernor:
                 output = (
                     f"Agent: {step.agent} finding: {step.finding}; disposition: {step.disposition or 'not set'}; "
                     f"evidence amounts: {list(step.used_amounts)}"
+                    + (f"; message: {step.message}" if step.message else "")
                 )
                 verdict = self.content_checker(output)
             else:

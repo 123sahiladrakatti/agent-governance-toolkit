@@ -251,6 +251,7 @@ class GraphStep:
     received_findings_by_parent: dict[str, str] = field(default_factory=dict)
     finding_version: int = 1
     received_versions_by_parent: dict[str, int] = field(default_factory=dict)
+    message: str | None = None                # optional free-text output the agent emitted (content checks)
 
 
 @dataclass(frozen=True)

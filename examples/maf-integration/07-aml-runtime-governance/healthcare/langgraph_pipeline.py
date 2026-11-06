@@ -49,6 +49,10 @@ REVIEW_BRANCHES = (ALLERGY_AGENT, MEDICATION_AGENT, COVERAGE_AGENT)
 # runs the care-decision agent as a real Ollama LLM with a small context window.
 DETERMINISTIC_DECISION = "deterministic"
 LLM_CONTEXT_LOSS_DECISION = "llm-context-loss"
+# Allergy-safety implementations: "deterministic" (default) or "llm-pii" (real Ollama LLM
+# with a permissive prompt; its free-text handoff note becomes the step's message).
+DETERMINISTIC_ALLERGY = "deterministic"
+LLM_PII_ALLERGY = "llm-pii"
 HEALTHCARE_ACTION = {
     INTAKE_AGENT: "route_care_request",
     ALLERGY_AGENT: "evaluate_allergy_safety",
@@ -71,6 +75,11 @@ class CarePathState(TypedDict):
     llm_config: Optional[Any]
     # Set by the LLM care-decision node: what the agent saw vs. decided (``LLMDecision``).
     llm_decision: Optional[Any]
+    allergy_mode: str
+    allergy_llm_config: Optional[Any]
+    allergy_redact: bool                     # control: add the redaction instruction to the agent's prompt
+    # Set by the LLM allergy node: the agent's status and handoff note (``LLMAllergyNote``).
+    llm_allergy: Optional[Any]
 
 
 def _step(agent: str, finding: str, case: HealthcareCase, flagged: bool = False, **extra) -> TraceStep:
@@ -92,7 +101,24 @@ def intake_node(state: CarePathState) -> dict:
     return _write(INTAKE_AGENT, _step(INTAKE_AGENT, INTAKE_FINDING, state["case"]))
 
 
+def llm_allergy_node(state: CarePathState) -> dict:
+    """Allergy safety by a real LLM: its status is the finding, its handoff note the message."""
+
+    from healthcare.llm_allergy_agent import run_llm_allergy_check
+
+    case = state["case"]
+    result = run_llm_allergy_check(case, state.get("allergy_llm_config"), redact=state.get("allergy_redact", False))
+    flagged = result.status == "CONTRAINDICATION"
+    step = _step(
+        ALLERGY_AGENT, result.status.lower(), case, flagged,
+        finding_version=allergy_version(flagged), message=result.note,
+    )
+    return {**_write(ALLERGY_AGENT, step), "llm_allergy": result}
+
+
 def allergy_node(state: CarePathState) -> dict:
+    if state.get("allergy_mode", DETERMINISTIC_ALLERGY) == LLM_PII_ALLERGY:
+        return llm_allergy_node(state)
     case = state["case"]
     finding, flagged = allergy_finding(case)
     return _write(ALLERGY_AGENT, _step(
@@ -191,11 +217,16 @@ def run_care_path_graph(
     stale_allergy_view: bool = False,
     decision_mode: str = DETERMINISTIC_DECISION,
     llm_config: Any = None,
+    allergy_mode: str = DETERMINISTIC_ALLERGY,
+    allergy_llm_config: Any = None,
+    allergy_redact: bool = False,
 ) -> CarePathState:
     """Execute the compiled graph for one case and return the final LangGraph state."""
 
     if decision_mode not in (DETERMINISTIC_DECISION, LLM_CONTEXT_LOSS_DECISION):
         raise ValueError(f"unsupported decision_mode: {decision_mode!r}")
+    if allergy_mode not in (DETERMINISTIC_ALLERGY, LLM_PII_ALLERGY):
+        raise ValueError(f"unsupported allergy_mode: {allergy_mode!r}")
     return build_care_path_graph().invoke({
         "case": case,
         "stale_allergy_view": stale_allergy_view,
@@ -204,6 +235,10 @@ def run_care_path_graph(
         "decision_mode": decision_mode,
         "llm_config": llm_config,
         "llm_decision": None,
+        "allergy_mode": allergy_mode,
+        "allergy_llm_config": allergy_llm_config,
+        "allergy_redact": allergy_redact,
+        "llm_allergy": None,
     })
 
 
@@ -239,8 +274,27 @@ def build_llm_context_loss_care_path(case: HealthcareCase, llm_config: Any = Non
     return _normalize(case, state), state["llm_decision"]
 
 
+def build_llm_pii_care_path(
+    case: HealthcareCase, allergy_llm_config: Any = None, redact: bool = False
+) -> tuple[tuple[GraphStep, ...], Any]:
+    """Run the care path with a real-LLM allergy-safety agent; every other agent is deterministic.
+
+    Returns the normalized steps and the ``LLMAllergyNote``. Nothing is planted: any
+    personal data in the note is the model's own output. ``redact=True`` is the control:
+    the same prompt plus one redaction instruction.
+    """
+
+    state = run_care_path_graph(
+        case, allergy_mode=LLM_PII_ALLERGY, allergy_llm_config=allergy_llm_config, allergy_redact=redact
+    )
+    return _normalize(case, state), state["llm_allergy"]
+
+
 __all__ = [
+    "DETERMINISTIC_ALLERGY",
     "DETERMINISTIC_DECISION",
+    "LLM_PII_ALLERGY",
+    "build_llm_pii_care_path",
     "LLM_CONTEXT_LOSS_DECISION",
     "CarePathState",
     "build_llm_context_loss_care_path",

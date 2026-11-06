@@ -19,6 +19,8 @@ from agt_resolver import GraphGovernor
 from aml.client_payload import AML_RECORD_CODECS, AML_RUN_ENGINE, simulate_aml_case, simulate_aml_case_llm
 from aml.llm_decision_agent import default_config as aml_llm_config
 from healthcare.llm_decision_agent import default_config as healthcare_llm_config
+from healthcare.llm_allergy_agent import default_config as allergy_llm_config
+from healthcare.llm_allergy_agent import redact_note
 from llm_decision import LLMDecisionError
 from aml.correctness import AmlCorrectnessComponent
 from client_pipeline import (
@@ -40,9 +42,10 @@ from healthcare.client_payload import (
     allergy_finding,
     simulate_healthcare_case,
     simulate_healthcare_case_llm,
+    simulate_healthcare_case_llm_pii,
 )
 from healthcare.correctness import HealthcareCorrectnessComponent
-from healthcare.system import HealthcareCase, MEDICATION_ALLERGENS
+from healthcare.system import DEMO_MEMBER_ID, HealthcareCase, MEDICATION_ALLERGENS
 from env_file import load_env_file
 
 # Local settings (e.g. AML_LLM_NUM_CTX) from .env, re-read on every run so edits apply without a restart.
@@ -285,19 +288,52 @@ LLM_DEMO = {
         "lost": "allergy-safety report",
     },
 }
+PII_MODE_LABEL = "Real LLM allergy agent (PII-leak demo)"
 demo = LLM_DEMO[selected_reference]
 llm_config = demo["config"]()
-decision_mode = DECISION_MODES[st.radio(
-    "Decision agent",
-    tuple(DECISION_MODES),
+mode_options = {
+    **DECISION_MODES,
+    **({PII_MODE_LABEL: "llm-pii-leak"} if selected_reference == "Healthcare" else {}),
+}
+decision_mode = mode_options[st.radio(
+    "Agent mode",
+    tuple(mode_options),
     horizontal=True,
     help=(
         f"Deterministic: every agent is scripted; {demo['planted']}. "
-        f"Real LLM: only the {demo['agent']} is a real Ollama LLM with a deliberately small context "
-        "window; the other agents stay deterministic and nothing is planted."
+        f"Real LLM (context-loss demo): only the {demo['agent']} is a real Ollama LLM with a deliberately small "
+        "context window; the other agents stay deterministic and nothing is planted."
+        + (" Real LLM allergy agent (PII-leak demo): only the allergy-safety agent is a real Ollama LLM, given the "
+           "full patient record and a permissive prompt; NeMo checks its handoff note for personal data."
+           if selected_reference == "Healthcare" else "")
     ),
 )]
-if decision_mode == "llm-context-loss":
+redact_control = False
+allergy_config = allergy_llm_config()
+if decision_mode == "llm-pii-leak":
+    st.info(
+        f"Allergy-safety agent: real LLM (PII-leak demo). {allergy_config.model} via local Ollama; every other "
+        "agent stays deterministic. The agent receives the full patient record and is asked only to check the "
+        "medication order and write a short, self-contained handoff note for the receiving nurse. The prompt never "
+        "asks for identifiers and has no redaction instruction, so any patient name or ID in the note is the "
+        "model's own over-sharing. The NeMo content rail checks that note for personal data. "
+        "Each run can take 10-30 seconds."
+    )
+    redact_control = st.checkbox(
+        "Control: add a redaction instruction to the allergy agent's prompt",
+        help=("Same prompt plus one sentence telling the agent not to include the patient's name, ID, age, or "
+              "diagnosis. With it the agent should not leak, and NeMo should pass the note."),
+    )
+    allergy_keys = ("HEALTHCARE_ALLERGY_LLM_MODEL", "OLLAMA_URL")
+    allergy_sources = [
+        f"{key}={os.environ[key]} ({'.env' if key in env_from_file else 'terminal'})"
+        for key in allergy_keys if key in os.environ
+    ]
+    st.caption(
+        "LLM settings: " + (", ".join(allergy_sources) if allergy_sources else "built-in defaults")
+        + f" (model {allergy_config.model}). Edit {ENV_FILE.name} and run the case again to change them."
+    )
+elif decision_mode == "llm-context-loss":
     st.info(
         f"{demo['agent'].capitalize()}: real LLM (context-loss demo). {llm_config.model} via local Ollama with "
         f"context window num_ctx={llm_config.num_ctx} (the demo uses 1024, which the {demo['file']} overflows); "
@@ -383,6 +419,11 @@ else:
         "combination runs clean. A match creates a current v2 contraindication that the final care agent "
         "receives as stale v1 context."
         if decision_mode == "deterministic" else
+        "In this mode any medication and allergy combination works: the failure is in the allergy agent's note, "
+        "not the decision. For Cephalexin with a penicillin allergy the model tends to report CONTRAINDICATION "
+        "(clinical cross-reactivity) although the formulary rule says NO-CONTRAINDICATION, so the deterministic "
+        "correctness check also flags that combination."
+        if decision_mode == "llm-pii-leak" else
         "In this mode the allergy-safety report falls out of the care-decision agent's window for every case. "
         "With a medication and its matching allergy the agent's decision misses a real contraindication; "
         "otherwise its decision happens to be right, but it was still made without the allergy result."
@@ -397,6 +438,11 @@ else:
         with c1:
             patient_name = st.text_input("Patient name", placeholder="Enter patient name")
             patient_id = st.text_input("Patient ID", value="PAT-DEMO-001")
+            member_id = st.text_input(
+                "Insurance member ID (synthetic)", value=DEMO_MEMBER_ID,
+                help="Synthetic, obviously fake member number (MBR-####-####-##); never a real ID or SSN. "
+                     "Optional: leave blank for none.",
+            )
             patient_age = st.number_input("Age", min_value=0, max_value=120, value=45)
             diagnosis = st.text_input("Diagnosis / care reason", value="bacterial infection")
         with c2:
@@ -415,6 +461,7 @@ else:
 
 if submitted:
     st.session_state.pop("governance_review", None)
+    llm_allergy = None
     try:
         if selected_reference == "AML":
             if not customer_name.strip():
@@ -466,10 +513,16 @@ if submitted:
                 raise ValueError("Patient ID and diagnosis are required")
             domain_records = HealthcareCase(
                 "HC-INTERACTIVE", patient_id.strip(), patient_name.strip(), int(patient_age),
-                diagnosis.strip(), medication, known_allergy, bool(coverage_authorized)
+                diagnosis.strip(), medication, known_allergy, bool(coverage_authorized),
+                member_id=member_id.strip(),
             )
             llm_decision = None
-            if decision_mode == "llm-context-loss":
+            if decision_mode == "llm-pii-leak":
+                with st.spinner(f"Allergy-safety agent: real LLM ({allergy_config.model}) is writing its handoff note"):
+                    case_run, case_records, llm_allergy = simulate_healthcare_case_llm_pii(
+                        domain_records, allergy_config, redact_control
+                    )
+            elif decision_mode == "llm-context-loss":
                 with st.spinner(
                     f"Care-decision agent: real LLM ({llm_config.model}, num_ctx={llm_config.num_ctx}) is deciding the case"
                 ):
@@ -518,11 +571,13 @@ if submitted:
             "run_engine_fallback": run_engine_fallback,
             "decision_mode": decision_mode,
             "llm_decision": llm_decision,
+            "llm_allergy": llm_allergy,
+            "records": domain_records,
         }
         progress.progress(100, text="Governance decision complete")
         progress.empty()
     except LLMDecisionError as exc:
-        st.error(f"The real-LLM decision agent failed, so nothing was governed: {exc}")
+        st.error(f"The real-LLM agent failed, so nothing was governed: {exc}")
         if exc.raw_output:
             with st.expander("Raw decision-agent output", expanded=True):
                 st.code(exc.raw_output)
@@ -582,6 +637,14 @@ events: list[tuple[str, str, str, str, str]] = [
           f"not in its context: {', '.join(result['llm_decision'].not_consumed) or 'none'}.")]
         if result.get("llm_decision") is not None else []
     ),
+    *(
+        [(PLUG, "Allergy agent (real LLM)", "WROTE NOTE", "pass",
+          f"{result['llm_allergy'].model} returned status {result['llm_allergy'].status} and a handoff note "
+          f"({'redaction instruction in prompt' if result['llm_allergy'].redacted else 'permissive prompt'}); "
+          f"record identifiers found verbatim in the note: "
+          f"{', '.join(result['llm_allergy'].identifiers_in_note) or 'none'}.")]
+        if result.get("llm_allergy") is not None else []
+    ),
     (FW, "JSON ingestion", "PASS", "pass",
      f"Definition + live run validated into a PipelineTrace of {len(review.outcome.steps)} agent steps; "
      "permissions and policies taken from the client pipeline definition."),
@@ -635,6 +698,9 @@ engine_pill = (
     '<span class="pill llm">DECISION AGENT: REAL LLM (CONTEXT-LOSS DEMO)</span>'
     if result.get("llm_decision") is not None
     else '<span class="pill live">DECISION AGENT: DETERMINISTIC</span>'
+) + (
+    '<span class="pill llm">ALLERGY AGENT: REAL LLM (PII-LEAK DEMO)</span>'
+    if result.get("llm_allergy") is not None else ""
 )
 st.markdown(
     f'<div class="simulator">{engine_pill}{event_html}</div>',
@@ -648,8 +714,13 @@ st.markdown(
     f'the {esc(result["domain"])} case is the client input it governed.</p>',
     unsafe_allow_html=True,
 )
-if integrity.passed:
+if integrity.passed and action == "allow":
     st.success("No governance failure: the pipeline agents used consistent state and the case passed its checks.")
+elif integrity.passed:
+    st.info(
+        "Deterministic trace integrity passed: every agent consumed what its parents emitted. "
+        "The governance decision below comes from another check."
+    )
 else:
     if producer is not None:
         st.markdown(
@@ -661,6 +732,30 @@ else:
             f'</div>',
             unsafe_allow_html=True,
         )
+
+def contrast_table(highlight: str) -> str:
+    """Which layer catches which real-LLM failure; the row for this run is highlighted."""
+    rows = (
+        ("context-loss", "Context loss: the decision agent loses a branch finding",
+         "Catches it: what the agent consumed differs from what the parent emitted",
+         "Misses it: the output has no personal data or injection to flag"),
+        ("pii-leak", "PII leak: the allergy agent over-shares in its note",
+         "Misses it: provenance and versions are consistent",
+         "Catches it: personal data in the agent's own output"),
+    )
+    bold = ' style="font-weight:700"'
+    body = "".join(
+        f'<tr{bold if key == highlight else ""}><td>{esc(failure)}</td>'
+        f"<td>{esc(trace)}</td><td>{esc(nemo)}</td></tr>"
+        for key, failure, trace, nemo in rows
+    )
+    return (
+        '<p><b>Each failure is caught by the layer suited to it and missed by the other</b> '
+        "(this run's row in bold):</p>"
+        "<table><tr><th>Real-LLM failure</th><th>Deterministic trace check</th><th>NeMo content rail</th></tr>"
+        f"{body}</table>"
+    )
+
 
 llm_run = result.get("llm_decision")
 if llm_run is not None:
@@ -675,8 +770,8 @@ if llm_run is not None:
     nemo_decision = next((c for c in review.content_checks if c["agent"] == result["final_agent"]), None)
     nemo_text = (
         f"NeMo ran on the decision agent's output with the configured rail ({nemo_decision['rail']}) and "
-        f"returned: {nemo_decision['reason']} That rail checks for prompt injection and sees only the agent's "
-        "own output, so it does not judge grounding; the catch here comes from the deterministic trace check."
+        f"returned: {nemo_decision['reason']} That rail checks the agent's own output for prompt injection and "
+        "personal data; it does not judge grounding, so the catch here comes from the deterministic trace check."
         if nemo_decision else "NeMo did not run on the decision agent's output."
     )
     st.markdown(
@@ -693,7 +788,8 @@ if llm_run is not None:
         '<p>Each branch finding lives in the trace and the records, outside the agent. The framework compares '
         "what the decision agent consumed against what each parent emitted, so it catches the lost finding "
         "whether or not the agent's answer happens to be right.</p>"
-        f'<p>{esc(nemo_text)}</p></div>',
+        f'<p>{esc(nemo_text)}</p>'
+        + contrast_table("context-loss") + '</div>',
         unsafe_allow_html=True,
     )
     with st.expander("Decision agent prompt and raw output", expanded=False):
@@ -701,6 +797,50 @@ if llm_run is not None:
         st.code(llm_run.prompt)
         st.markdown("**Raw model output**")
         st.code(llm_run.raw_output)
+
+allergy_run = result.get("llm_allergy")
+if allergy_run is not None:
+    allergy_agent = "allergy-safety"
+    nemo_allergy = next((c for c in review.content_checks if c["agent"] == allergy_agent), None)
+    if nemo_allergy is None:
+        nemo_line = "NeMo did not run on the allergy agent's note."
+    elif nemo_allergy["rail"] == "unavailable":
+        nemo_line = f"NeMo was unavailable for the allergy agent's note ({nemo_allergy['reason']})."
+    else:
+        nemo_line = (
+            f"<b>{'BLOCKED' if not nemo_allergy['passed'] else 'ALLOWED'}</b> by the content rail "
+            f"({esc(nemo_allergy['rail'])}): {esc(nemo_allergy['reason'])}"
+        )
+    allergy_step = steps[allergy_agent]
+    allergy_check = next((c for c in review.attribution.branch_checks if c.agent == allergy_agent), None)
+    st.markdown(
+        '<div class="loss"><h3>Real content failure: the allergy-safety agent is a real LLM with a permissive prompt</h3>'
+        f'<p>{esc(allergy_run.model)} received the full patient record and was asked only for a short, self-contained '
+        "handoff note. "
+        + ("This run used the <b>control</b> prompt, which adds one redaction instruction. "
+           if allergy_run.redacted else
+           "The prompt never asks for identifiers and has no redaction instruction. ")
+        + "Whatever personal data appears in the note is the model's own output.</p>"
+        f'<p><b>Agent status:</b> {esc(allergy_run.status)} &nbsp;·&nbsp; <b>Records require:</b> '
+        f'{esc((allergy_check.recomputed if allergy_check else "-").upper())}</p>'
+        f'<p><b>Handoff note</b> (identifiers masked for display): '
+        f'<code>{esc(redact_note(result["records"], allergy_run.note))}</code></p>'
+        f'<p><b>Record identifiers found verbatim in the note:</b> '
+        f'{esc(", ".join(allergy_run.identifiers_in_note) or "none")} (a display check; NeMo makes the call)</p>'
+        f'<p><b>NeMo content rail (non-deterministic) on the allergy agent:</b> {nemo_line}</p>'
+        f'<p><b>Deterministic trace check:</b> {"passed" if integrity.passed else "flagged"} '
+        f"({esc(integrity.reason)}) &nbsp;·&nbsp; <b>Correctness plug-in:</b> "
+        f'{"passed" if review.attribution.passed else "flagged"}. '
+        "A personal-data leak is a content problem, not a provenance problem, so the deterministic checks have "
+        "nothing to flag unless the agent's status itself is wrong.</p>"
+        + contrast_table("pii-leak") + '</div>',
+        unsafe_allow_html=True,
+    )
+    with st.expander("Allergy agent prompt and raw output (unredacted, synthetic data)", expanded=False):
+        st.markdown("**Prompt sent to the agent**")
+        st.code(allergy_run.prompt)
+        st.markdown("**Raw model output**")
+        st.code(allergy_run.raw_output)
 
 origin = (
     f"{review.attribution.origin_node or '-'} · {review.attribution.origin_agent}"

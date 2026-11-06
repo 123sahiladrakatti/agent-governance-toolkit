@@ -45,6 +45,11 @@ MEDICATION_ALLERGENS = {
 }
 
 
+# Synthetic insurance member number for the demo: an obviously fake member/subscriber
+# format (MBR-####-####-##), deliberately not an SSN or any national-ID shape.
+DEMO_MEMBER_ID = "MBR-8847-2291-05"
+
+
 @dataclass(frozen=True)
 class HealthcareCase:
     case_id: str
@@ -55,6 +60,7 @@ class HealthcareCase:
     medication: str
     known_allergy: str
     coverage_authorized: bool
+    member_id: str = ""          # synthetic insurance member ID; "" when the record has none
 
 
 def encode_healthcare_case(value: object) -> dict[str, object]:
@@ -75,6 +81,7 @@ def decode_healthcare_case(value: object) -> HealthcareCase:
         medication=str(value["medication"]),
         known_allergy=str(value["known_allergy"]),
         coverage_authorized=bool(value["coverage_authorized"]),
+        member_id=str(value.get("member_id", "")),
     )
 
 
@@ -100,6 +107,7 @@ HEALTHCARE_SYSTEM_DESCRIPTION = SystemDescription(
 __all__ = [
     "ALLERGY_AGENT",
     "CARE_DECISION_AGENT",
+    "DEMO_MEMBER_ID",
     "COVERAGE_AGENT",
     "HEALTHCARE_ALLOWED",
     "HEALTHCARE_NODE_ID",

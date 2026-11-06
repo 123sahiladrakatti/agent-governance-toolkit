@@ -41,7 +41,8 @@ stage runs on. The format is domain-agnostic. The AML demo is one instance; see
           "version": 3,
           "disposition": "CLEAR",              // optional domain outcome
           "target": "ACCT-DEMO-001",           // optional: the resource the agent acted on
-          "evidence": {"values": [], "aggregate": 0.0}   // optional numeric evidence
+          "evidence": {"values": [], "aggregate": 0.0},  // optional numeric evidence
+          "message": "free-text note the agent emitted"  // optional; checked by the NeMo content rail
         },
         "received": {                          // per-parent handoff, as the agent consumed it
           "customer-screening": {"finding": "no-hit", "version": 1, "values": []}
@@ -97,6 +98,28 @@ Load it with `client_pipeline.load_pipeline_definition(path)`, which validates
   (the AML demo registers one so its correctness plug-in gets typed records).
 - A malformed payload raises `ClientPipelineError` with the path of the offending field, and nothing
   is governed.
+
+## Healthcare records (`healthcare-care-path/v1`)
+
+The healthcare reference pipeline registers a record codec, so its `records` block is a
+patient case. All values in the demo are synthetic.
+
+```jsonc
+"records": {
+  "case_id": "HC-INTERACTIVE",
+  "patient_id": "PAT-DEMO-001",
+  "patient_name": "Pat Example",
+  "age": 45,
+  "diagnosis": "bacterial infection",
+  "medication": "Amoxicillin",
+  "known_allergy": "penicillin",
+  "coverage_authorized": true,
+  "member_id": "MBR-8847-2291-05"   // optional synthetic insurance member ID; "" or absent when none
+}
+```
+
+`member_id` uses an obviously fake member-number format (`MBR-####-####-##`). It is never an
+SSN or any real national identifier. Records without it decode with an empty `member_id`.
 
 ## What governance reads from it
 

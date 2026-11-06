@@ -183,6 +183,7 @@ def _parse_step(step: Any, index: int, description: SystemDescription) -> TraceS
         received_findings_by_parent=findings,
         finding_version=_optional(output, "version", int, f"{where}.output", 1),
         received_versions_by_parent=versions,
+        message=_optional(output, "message", str, f"{where}.output", None),
     )
 
 
@@ -267,6 +268,8 @@ def run_to_json(
             output["target"] = step.acted_account_id
         if step.used_amounts or step.used_aggregate:
             output["evidence"] = {"values": list(step.used_amounts), "aggregate": step.used_aggregate}
+        if step.message is not None:
+            output["message"] = step.message
         entry: dict[str, Any] = {"agent": step.agent, "action": step.action_type, "output": output}
         parents = list(dict.fromkeys([
             *step.received_findings_by_parent,

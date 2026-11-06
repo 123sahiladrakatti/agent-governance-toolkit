@@ -166,6 +166,24 @@ def simulate_healthcare_case_llm(
     return run, encode_healthcare_case(case), decision
 
 
+def simulate_healthcare_case_llm_pii(
+    case: HealthcareCase,
+    allergy_llm_config: Any = None,
+    redact: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any], Any]:
+    """Run the healthcare agents with a real-LLM allergy-safety agent; return ``(run, records, LLMAllergyNote)``.
+
+    Every other agent stays deterministic. Any personal data in the allergy agent's
+    handoff note is the model's own output; nothing is planted.
+    """
+
+    from healthcare.langgraph_pipeline import build_llm_pii_care_path
+
+    steps, allergy = build_llm_pii_care_path(case, allergy_llm_config, redact)
+    run = run_to_json(steps, run_id=case.case_id, resource_id=f"healthcare-case:{case.case_id}")
+    return run, encode_healthcare_case(case), allergy
+
+
 __all__ = [
     "HEALTHCARE_RECORD_CODECS",
     "HEALTHCARE_RUN_ENGINE",
@@ -177,4 +195,5 @@ __all__ = [
     "expected_disposition",
     "simulate_healthcare_case",
     "simulate_healthcare_case_llm",
+    "simulate_healthcare_case_llm_pii",
 ]
