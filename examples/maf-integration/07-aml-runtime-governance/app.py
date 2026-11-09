@@ -7,7 +7,6 @@ Run: streamlit run app.py
 from __future__ import annotations
 
 import html
-import json
 import os
 from datetime import date, datetime, time
 from pathlib import Path
@@ -15,27 +14,29 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from agt_resolver import GraphGovernor
 from aml.client_payload import AML_RECORD_CODECS, AML_RUN_ENGINE, simulate_aml_case, simulate_aml_case_llm
 from aml.llm_decision_agent import default_config as aml_llm_config
 from healthcare.llm_decision_agent import default_config as healthcare_llm_config
 from healthcare.llm_allergy_agent import default_config as allergy_llm_config
 from healthcare.llm_allergy_agent import redact_note
+from healthcare.batch import (
+    BATCH_LIMIT,
+    BATCH_MODES,
+    DEFAULT_BATCH_FILE,
+    BatchFileError,
+    load_healthcare_cases,
+    run_healthcare_batch,
+    summary_line,
+)
 from llm_decision import LLMDecisionError
 from aml.correctness import AmlCorrectnessComponent
-from client_pipeline import (
-    ClientPipelineError,
-    compose_client_payload,
-    ingest_client_pipeline,
-    load_pipeline_definition,
-)
+from client_pipeline import ClientPipelineError, load_pipeline_definition
 from domain import (
     Alert,
     CustomerProfile,
     SANCTIONS_WATCHLIST,
     Transaction,
 )
-from graph_integrity import check_graph_integrity
 from healthcare.client_payload import (
     HEALTHCARE_RUN_ENGINE,
     HEALTHCARE_RECORD_CODECS,
@@ -47,6 +48,9 @@ from healthcare.client_payload import (
 from healthcare.correctness import HealthcareCorrectnessComponent
 from healthcare.system import DEMO_MEMBER_ID, HealthcareCase, MEDICATION_ALLERGENS
 from env_file import load_env_file
+from governed_run import govern_client_run
+from governance_view import CONTRAST_ROWS, FW, build_governance_view
+from report_pdf import build_case_report
 
 # Local settings (e.g. AML_LLM_NUM_CTX) from .env, re-read on every run so edits apply without a restart.
 ENV_FILE = Path(__file__).parent / ".env"
@@ -539,34 +543,19 @@ if submitted:
         progress = st.progress(
             10, text=f"Client pipeline: {selected_reference} agents are running the live case"
         )
-        payload_json = json.dumps(
-            compose_client_payload(pipeline_definition, case_run, case_records), indent=2
+        governed = govern_client_run(
+            pipeline_definition, case_run, case_records, codecs, correctness_component,
+            on_stage=lambda percent, message: progress.progress(percent, text=message),
         )
-        progress.progress(30, text="Framework: ingesting the client-pipeline JSON")
-        ingested = ingest_client_pipeline(payload_json, codecs)
-        outcome = ingested.outcome
-        policy_overrides = {
-            key: value for key, value in (
-                ("graph_policy", ingested.graph_policy), ("action_policy", ingested.action_policy)
-            ) if value is not None
-        }
-        governor = GraphGovernor(
-            system_description=ingested.description,
-            correctness_component=correctness_component,
-            **policy_overrides,
-        )
-        progress.progress(45, text="Framework: running authorization, trace, NeMo, and correctness checks")
-        review = governor.review(outcome)
-        progress.progress(85, text="Framework: Action Governance is combining signals")
         st.session_state.governance_review = {
             "domain": selected_reference,
             "plugin_label": plugin_label,
-            "review": review,
-            "integrity": check_graph_integrity(outcome),
-            "agt_live": governor.agt_live,
+            "review": governed.review,
+            "integrity": governed.integrity,
+            "agt_live": governed.agt_live,
             "subject_label": subject_label,
             "subject_value": subject_value,
-            "final_agent": ingested.description.final_agent,
+            "final_agent": governed.final_agent,
             "run_engine": run_engine,
             "run_engine_fallback": run_engine_fallback,
             "decision_mode": decision_mode,
@@ -586,6 +575,127 @@ if submitted:
     except (KeyError, TypeError, ValueError) as exc:
         st.error(f"The case could not be processed: {exc}")
 
+# --------------------------------------------------------------------------- backend batch (healthcare)
+if selected_reference == "Healthcare":
+    batch_state = st.session_state.get("healthcare_batch")
+    with st.expander("BATCH · Govern the sample healthcare cases from the backend Excel file", expanded=bool(batch_state)):
+        st.markdown(
+            f'<p class="section-help">Reads <code>batch_cases/{esc(DEFAULT_BATCH_FILE.name)}</code> from the repo '
+            "(no upload) and runs every case through one real-LLM failure mode, using the same ingestion and "
+            f"governance path as the single-case form. Up to {BATCH_LIMIT} cases; each real-LLM case takes 15-60 "
+            "seconds.</p>",
+            unsafe_allow_html=True,
+        )
+        batch_mode = {label: key for key, label in BATCH_MODES.items()}[st.radio(
+            "Batch LLM failure mode", tuple(BATCH_MODES.values()), horizontal=True, key="batch_mode",
+        )]
+        batch_decision_config, batch_allergy_config = healthcare_llm_config(), allergy_llm_config()
+        st.caption(
+            f"Care-decision agent: {batch_decision_config.model}, num_ctx={batch_decision_config.num_ctx}"
+            if batch_mode == "llm-context-loss" else
+            f"Allergy-safety agent: {batch_allergy_config.model}, permissive prompt (no redaction instruction)"
+        )
+        if st.button("Load & govern sample cases", key="run_batch"):
+            st.session_state.pop("healthcare_batch", None)
+            try:
+                batch_cases = load_healthcare_cases(DEFAULT_BATCH_FILE)
+            except BatchFileError as exc:
+                st.error(f"The batch file was rejected: {exc}")
+            else:
+                if len(batch_cases) > BATCH_LIMIT:
+                    st.warning(
+                        f"{len(batch_cases)} cases found; only the first {BATCH_LIMIT} run "
+                        "(real-LLM runs take 15-60 seconds each)."
+                    )
+                batch_progress = st.progress(0, text="Starting the batch")
+
+                def report(position, total, item):
+                    batch_progress.progress(
+                        (position - 1) / total,
+                        text=f"Running case {position} of {total}: {item.case.patient_name} (row {item.row})",
+                    )
+
+                batch_results = run_healthcare_batch(
+                    batch_cases, batch_mode, pipeline_definition,
+                    decision_config=batch_decision_config, allergy_config=batch_allergy_config, on_case=report,
+                )
+                batch_progress.empty()
+                st.session_state.healthcare_batch = batch_state = {
+                    "mode": batch_mode, "results": batch_results,
+                    "skipped": max(0, len(batch_cases) - BATCH_LIMIT),
+                }
+        if batch_state:
+            batch_results = batch_state["results"]
+            st.markdown(
+                f"**{esc(BATCH_MODES[batch_state['mode']])}:** {esc(summary_line(batch_results))}"
+                + (f" ({batch_state['skipped']} case(s) beyond the limit were not run)" if batch_state["skipped"] else "")
+            )
+            st.dataframe([{
+                "row": r.row,
+                "patient": r.patient_name,
+                "medication / allergy": f"{r.medication} / {r.known_allergy}",
+                "agent disposition": r.disposition or "-",
+                "trace check": r.trace_check or "-",
+                "NeMo": r.nemo or "-",
+                "verdict": r.verdict or "ERROR",
+                "caught by": r.error or r.caught_by,
+            } for r in batch_results], hide_index=True, width="stretch")
+            st.caption(
+                "These are real LLM runs, so results are probabilistic: the same case can come out differently on "
+                "another run, model, or context window. The governance checks themselves are deterministic, apart "
+                "from NeMo, which is also an LLM judgement."
+            )
+            for r in batch_results:
+                with st.expander(f"Row {r.row} · {r.patient_name} · {r.verdict or 'ERROR'}"):
+                    if r.error:
+                        st.error(r.error)
+                        continue
+                    review_b = r.governed.review
+                    st.markdown(f"**Policy result:** {esc(str(review_b.policy_decision.get('reason', '')))}")
+                    st.markdown(
+                        f"**Records require:** {esc(review_b.attribution.expected_disposition)} · "
+                        f"**Agent decided:** {esc(r.disposition or '-')}"
+                    )
+                    if batch_state["mode"] == "llm-context-loss":
+                        st.markdown(
+                            f"**Decision agent:** {esc(r.llm.model)}, num_ctx={r.llm.num_ctx}, kept "
+                            f"{r.llm.kept_tokens} prompt tokens; not in its context: "
+                            f"{esc(', '.join(r.llm.not_consumed) or 'none')}"
+                        )
+                        st.markdown("**Trace check:** " + esc(r.governed.integrity.reason))
+                    else:
+                        st.markdown(
+                            f"**Allergy agent note** (identifiers masked): "
+                            f"<code>{esc(redact_note(r.case, r.llm.note))}</code>",
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown(
+                            f"**Identifiers found verbatim:** {esc(', '.join(r.llm.identifiers_in_note) or 'none')}"
+                        )
+                    nemo_rows = [c for c in review_b.content_checks if c.get("rail") != "skipped"]
+                    st.markdown("**NeMo:** " + esc("; ".join(
+                        f"{c['agent']} {'FLAG' if not c['passed'] else c['rail']}" for c in nemo_rows
+                    )))
+                    # The PDF is built from this case's stored governance result (no re-run), once per batch.
+                    pdfs = batch_state.setdefault("pdfs", {})
+                    if r.row not in pdfs:
+                        try:
+                            pdfs[r.row] = build_case_report(
+                                r.case, batch_state["mode"], r.governed, r.llm,
+                                run_engine=HEALTHCARE_RUN_ENGINE,
+                                run_engine_fallback=HEALTHCARE_RUN_ENGINE != "langgraph", row=r.row,
+                            )
+                        except Exception as exc:  # a report failure must not hide the batch results
+                            pdfs[r.row] = exc
+                    if isinstance(pdfs[r.row], Exception):
+                        st.warning(f"The PDF report could not be built: {pdfs[r.row]}")
+                    else:
+                        st.download_button(
+                            "Download PDF report", data=pdfs[r.row], mime="application/pdf",
+                            file_name=f"governance-report-{r.case.case_id}.pdf", key=f"batch_pdf_{r.row}",
+                            help="Full governance detail for this case (identifiers masked).",
+                        )
+
 result = st.session_state.get("governance_review")
 if result is None or result["domain"] != selected_reference or result.get("decision_mode") != decision_mode:
     st.info("Enter a live case above to run it through the loaded client pipeline.")
@@ -593,28 +703,13 @@ if result is None or result["domain"] != selected_reference or result.get("decis
 
 review = result["review"]
 integrity = result["integrity"]
-steps = {step.agent: step for step in review.outcome.steps}
-decision = steps[result["final_agent"]]
-consumer = steps.get(integrity.origin_agent, decision)
-conflict_parents = (
-    *integrity.stale_parents,
-    *integrity.altered_parents,
-    *integrity.future_version_parents,
-    *integrity.missing_parents,
+view = build_governance_view(
+    result["domain"], review, integrity, result["final_agent"], result["run_engine"],
+    result["run_engine_fallback"], result.get("llm_decision"), result.get("llm_allergy"),
 )
-conflict_parent = next((parent for parent in conflict_parents if parent in steps), None)
-producer = steps.get(conflict_parent) if conflict_parent else None
-consumed_finding = (
-    consumer.received_findings_by_parent.get(conflict_parent, "missing")
-    if conflict_parent else "not applicable"
-)
-consumed_version = (
-    consumer.received_versions_by_parent.get(conflict_parent, "missing")
-    if conflict_parent else "not applicable"
-)
-action = str(review.policy_decision.get("action", "deny"))
-action_label = {"allow": "CONTINUE", "require_approval": "HUMAN REVIEW", "deny": "BLOCK"}.get(action, action.upper())
-verdict_css = {"allow": "continue", "require_approval": "review", "deny": "block"}.get(action, "block")
+steps, decision, consumer, producer = view.steps, view.decision, view.consumer, view.producer
+conflict_parent, consumed_finding, consumed_version = view.conflict_parent, view.consumed_finding, view.consumed_version
+action, action_label, verdict_css = view.action, view.action_label, view.verdict_css
 
 # --------------------------------------------------------------------------- event stream
 st.markdown('<p class="section-label">LIVE GOVERNANCE RUN</p>', unsafe_allow_html=True)
@@ -623,63 +718,7 @@ st.markdown(
     f'&nbsp;&nbsp;<span class="tag plug">{esc(result["plugin_label"])}</span>the swappable domain pieces slotted into them.</p>',
     unsafe_allow_html=True,
 )
-FW, PLUG = "fw", "plug"
-events: list[tuple[str, str, str, str, str]] = [
-    (PLUG, f"Client agents run case ({result['domain']})", "RAN", "pass",
-     f"Simulated {result['domain']} agents executed the live case through the client pipeline's topology "
-     f"(engine: {result['run_engine']}{', FALLBACK' if result['run_engine_fallback'] else ''})."),
-    *(
-        [(PLUG, "Decision agent (real LLM)",
-          "LOST CONTEXT" if result["llm_decision"].not_consumed else "DECIDED",
-          "review" if result["llm_decision"].not_consumed else "pass",
-          f"{result['llm_decision'].model} with num_ctx={result['llm_decision'].num_ctx} kept "
-          f"{result['llm_decision'].kept_tokens} prompt tokens and decided {result['llm_decision'].disposition}; "
-          f"not in its context: {', '.join(result['llm_decision'].not_consumed) or 'none'}.")]
-        if result.get("llm_decision") is not None else []
-    ),
-    *(
-        [(PLUG, "Allergy agent (real LLM)", "WROTE NOTE", "pass",
-          f"{result['llm_allergy'].model} returned status {result['llm_allergy'].status} and a handoff note "
-          f"({'redaction instruction in prompt' if result['llm_allergy'].redacted else 'permissive prompt'}); "
-          f"record identifiers found verbatim in the note: "
-          f"{', '.join(result['llm_allergy'].identifiers_in_note) or 'none'}.")]
-        if result.get("llm_allergy") is not None else []
-    ),
-    (FW, "JSON ingestion", "PASS", "pass",
-     f"Definition + live run validated into a PipelineTrace of {len(review.outcome.steps)} agent steps; "
-     "permissions and policies taken from the client pipeline definition."),
-]
-for handoff in review.handoffs:
-    events.append((
-        FW, f"Authorization · {handoff.sender} → {handoff.recipient}",
-        "AUTHORIZED" if handoff.passed else "DENIED",
-        "pass" if handoff.passed else "fail",
-        handoff.reason or handoff.rule or "Handoff policy evaluated.",
-    ))
-trace_status = "PASS" if integrity.passed else "STALE / CONFLICT"
-events.append((
-    FW, "Generic trace integrity", trace_status,
-    "pass" if integrity.passed else "review", integrity.reason,
-))
-for check in review.content_checks:
-    if not check["passed"]:
-        status, css = "FLAG", "review"
-    elif check["rail"] == "unavailable":
-        status, css = "UNAVAILABLE", "review"
-    else:
-        status, css = "PASS", "pass"
-    events.append((FW, f"NeMo content · {check['agent']}", status, css, str(check["reason"])))
-events.append((
-    PLUG, f"Correctness plug-in ({result['domain']})",
-    "PASS" if review.attribution.passed else "FLAG",
-    "pass" if review.attribution.passed else "review",
-    review.attribution.reason,
-))
-events.append((
-    FW, "Action Governance gate", action_label,
-    "pass" if action == "allow" else ("review" if action == "require_approval" else "fail"),
-    str(review.policy_decision.get("reason", "Final policy evaluated.")),
-))
+events = view.events
 
 event_html = "".join(
     f'<div class="event {css}"><span class="dot"></span><span class="phase">'
@@ -735,14 +774,7 @@ else:
 
 def contrast_table(highlight: str) -> str:
     """Which layer catches which real-LLM failure; the row for this run is highlighted."""
-    rows = (
-        ("context-loss", "Context loss: the decision agent loses a branch finding",
-         "Catches it: what the agent consumed differs from what the parent emitted",
-         "Misses it: the output has no personal data or injection to flag"),
-        ("pii-leak", "PII leak: the allergy agent over-shares in its note",
-         "Misses it: provenance and versions are consistent",
-         "Catches it: personal data in the agent's own output"),
-    )
+    rows = CONTRAST_ROWS
     bold = ' style="font-weight:700"'
     body = "".join(
         f'<tr{bold if key == highlight else ""}><td>{esc(failure)}</td>'
