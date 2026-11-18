@@ -118,5 +118,151 @@
         }
       ]
     }
+  },
+  "harness": {
+    "version": 1,
+    "description": "Governance harness for the healthcare care path: how to instrument the existing LangGraph pipeline's real-LLM care-decision agent and size its context window. Values are taken from the pipeline code and the local Ollama runtime.",
+    "framework": "langgraph",
+    "model": {
+      "name": "llama3.1:8b",
+      "provider": "ollama",
+      "base_url": "http://localhost:11434",
+      "tokenizer": {
+        "source": "ollama-gguf",
+        "model": "llama3.1:8b",
+        "type": "gpt2",
+        "pre": "llama-bpe",
+        "add_bos": true
+      },
+      "window_param": "num_ctx",
+      "current_window": 1024,
+      "advertised_window": 131072
+    },
+    "context_assembly": {
+      "chat_template": {
+        "name": "ollama-llama3.1",
+        "engine": "jinja2",
+        "runtime_template_sha256": "948af2743fc78a328dcb3b0f5a31b3d75f415840fdb699e8b1235978392ecf85",
+        "template": "{%- set system = messages | selectattr('role', 'equalto', 'system') | map(attribute='content') | join('\\n') -%}{%- if tools -%}{{ unsupported('tools') }}{%- endif -%}{%- if system -%}<|start_header_id|>system<|end_header_id|>\n\n{{ system }}<|eot_id|>{%- endif -%}{%- for m in messages if m.role != 'system' -%}{%- if m.role == 'user' -%}<|start_header_id|>user<|end_header_id|>\n\n{{ m.content }}<|eot_id|>{%- if loop.last %}<|start_header_id|>assistant<|end_header_id|>\n\n{% endif -%}{%- elif m.role == 'assistant' -%}<|start_header_id|>assistant<|end_header_id|>\n\n{{ m.content }}{%- if not loop.last %}<|eot_id|>{% endif -%}{%- else -%}{{ unsupported(m.role) }}{%- endif -%}{%- endfor -%}"
+      },
+      "includes": {
+        "care-decision": {
+          "system_instructions": false,
+          "task_instructions": "in the user message, after the reports",
+          "tool_definitions": false,
+          "upstream_findings": [
+            "allergy-safety",
+            "medication-review",
+            "coverage-review"
+          ],
+          "case_activity_log": true,
+          "history": false
+        }
+      },
+      "calibration": {
+        "window": 8192,
+        "messages": [
+          {
+            "role": "user",
+            "content": "Calibration: count these tokens exactly. Café 12345 naïve — 3.14."
+          }
+        ]
+      }
+    },
+    "observability": {
+      "can_capture_model_visible_prompt": false,
+      "exposes_processed_token_count": true,
+      "processed_token_field": "prompt_eval_count",
+      "can_log_trimming": false,
+      "truncation_policy": "keep_tail",
+      "model_call": {
+        "http_function": "httpx.post",
+        "endpoint": "/api/chat",
+        "primary_call": "first"
+      },
+      "overflow_error_markers": [
+        "context length",
+        "exceeds",
+        "too long",
+        "context window"
+      ]
+    },
+    "run_entry_point": {
+      "module": "instrumentation",
+      "function": "run_case",
+      "window_argument": "window"
+    },
+    "pipeline": {
+      "module": "healthcare.langgraph_pipeline",
+      "nodes": "NODES",
+      "state_schema": "CarePathState",
+      "graph_builder": "build_care_path_graph",
+      "run_function": "run_care_path_graph",
+      "run_arguments": {
+        "decision_mode": "llm-context-loss"
+      },
+      "normalize": "_normalize",
+      "model_config_factory": "healthcare.llm_decision_agent:default_config",
+      "window_state_key": "llm_config",
+      "window_config_field": "num_ctx",
+      "model_config_field": "model",
+      "records_codecs": "healthcare.client_payload:HEALTHCARE_RECORD_CODECS",
+      "run_id_field": "case_id"
+    },
+    "evidence_formats": {
+      "upstream_finding": {
+        "pattern": "^\\[REPORT (?P<id>[a-z0-9-]+) v(?P<version>\\d+)\\] [^:]+: (?P<finding>[A-Za-z0-9_-]+)\\.",
+        "source": {
+          "state_key": "steps",
+          "finding_field": "finding",
+          "version_field": "finding_version"
+        }
+      }
+    },
+    "agents": [
+      {
+        "name": "patient-intake",
+        "required_evidence": [],
+        "high_consequence_action": false,
+        "keeps_history": false,
+        "calls_model": false
+      },
+      {
+        "name": "allergy-safety",
+        "required_evidence": [],
+        "high_consequence_action": false,
+        "keeps_history": false,
+        "calls_model": false
+      },
+      {
+        "name": "medication-review",
+        "required_evidence": [],
+        "high_consequence_action": false,
+        "keeps_history": false,
+        "calls_model": false
+      },
+      {
+        "name": "coverage-review",
+        "required_evidence": [],
+        "high_consequence_action": false,
+        "keeps_history": false,
+        "calls_model": false
+      },
+      {
+        "name": "care-decision",
+        "required_evidence": [
+          "allergy-safety",
+          "medication-review",
+          "coverage-review"
+        ],
+        "evidence_format": "upstream_finding",
+        "high_consequence_action": true,
+        "keeps_history": false,
+        "calls_model": true
+      }
+    ],
+    "sizing": {
+      "resolution": 16
+    }
   }
 }

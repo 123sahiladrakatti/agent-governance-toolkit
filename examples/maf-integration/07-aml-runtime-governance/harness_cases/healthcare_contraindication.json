@@ -1,0 +1,11 @@
+{
+  "case_id": "HC-HARNESS-01",
+  "patient_id": "PAT-DEMO-001",
+  "patient_name": "Pat Example",
+  "age": 45,
+  "diagnosis": "bacterial infection",
+  "medication": "Amoxicillin",
+  "known_allergy": "penicillin",
+  "coverage_authorized": true,
+  "member_id": "MBR-8847-2291-05"
+}
