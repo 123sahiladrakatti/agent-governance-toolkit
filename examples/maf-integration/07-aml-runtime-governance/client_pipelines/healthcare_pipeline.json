@@ -156,7 +156,7 @@
             "coverage-review"
           ],
           "case_activity_log": true,
-          "history": false
+          "history": true
         }
       },
       "calibration": {
@@ -205,6 +205,7 @@
       "model_config_factory": "healthcare.llm_decision_agent:default_config",
       "window_state_key": "llm_config",
       "window_config_field": "num_ctx",
+      "accumulated_state_argument": "accumulated_state",
       "model_config_field": "model",
       "records_codecs": "healthcare.client_payload:HEALTHCARE_RECORD_CODECS",
       "run_id_field": "case_id"
@@ -257,7 +258,7 @@
         ],
         "evidence_format": "upstream_finding",
         "high_consequence_action": true,
-        "keeps_history": false,
+        "keeps_history": true,
         "calls_model": true
       }
     ],

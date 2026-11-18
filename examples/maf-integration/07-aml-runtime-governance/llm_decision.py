@@ -123,14 +123,21 @@ def build_case_file(
     records: object,
     branches: Mapping[str, TraceStep],
     config: LLMDecisionConfig,
+    accumulated_state: str = "",
 ) -> tuple[str, dict[str, str]]:
     """The decision agent's input, plus each report's line for window measurement."""
 
     lines = {report.agent: _report_line(spec, report, branches[report.agent], records) for report in spec.reports}
     keys = ", ".join(f'"{report.key}": "{spec.status_hint}"' for report in spec.reports)
+    retained_history = (
+        ["[ACCUMULATED HISTORY / MEMORY]", accumulated_state]
+        if accumulated_state
+        else []
+    )
     prompt = "\n".join([
         f"{spec.file_title} {spec.record_id(records)} - branch reports and case activity, in arrival order.",
         *(lines[report.agent] for report in spec.reports if report.early),
+        *retained_history,
         spec.log_title,
         _activity_log(spec, records, config.activity_log_lines),
         *(lines[report.agent] for report in spec.reports if not report.early),
@@ -271,11 +278,12 @@ def run_llm_decision(
     records: object,
     branches: Mapping[str, TraceStep],
     config: LLMDecisionConfig | None = None,
+    accumulated_state: str = "",
 ) -> LLMDecision:
     """Run the decision agent as a real Ollama call and record what it saw vs. decided."""
 
     config = config or LLMDecisionConfig()
-    prompt, lines = build_case_file(spec, records, branches, config)
+    prompt, lines = build_case_file(spec, records, branches, config, accumulated_state)
     reply = _chat(config, prompt, num_predict=config.num_predict)
     raw = str(reply.get("message", {}).get("content", ""))
     disposition, self_report = parse_decision_output(raw, spec)

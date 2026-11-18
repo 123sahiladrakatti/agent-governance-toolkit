@@ -515,13 +515,20 @@ def _verdict(integrity: Any, carried: dict[str, dict[str, bool]], window: Any, h
     }
 
 
-def run_case(case_json: Mapping[str, Any], window: int, *, harness: Harness | None = None,
-             ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def run_case(
+    case_json: Mapping[str, Any],
+    window: int,
+    accumulated_state: Any = None,
+    *,
+    harness: Harness | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Run one case through the instrumented pipeline at ``window``; return (trace, verdict).
 
     ``case_json`` is the customer JSON: the pipeline definition (system, policy), its
     ``harness`` block, and this case's encoded ``records``. ``harness`` overrides the one
-    resolved from ``case_json`` (tests only).
+    resolved from ``case_json`` (tests only). ``accumulated_state`` is an optional starting
+    history/memory value. It is passed through only when the customer harness declares
+    ``pipeline.accumulated_state_argument``; the harness never invents or mutates it.
     """
 
     from client_pipeline import compose_client_payload, ingest_client_pipeline, run_to_json
@@ -540,9 +547,23 @@ def run_case(case_json: Mapping[str, Any], window: int, *, harness: Harness | No
     })
     graph = _instrumented_graph(harness, module)
     run_function = getattr(module, pipe["run_function"])
+    accumulated_arguments: dict[str, Any] = {}
+    if accumulated_state is not None:
+        argument = pipe.get("accumulated_state_argument")
+        if not argument:
+            raise HarnessConfigError(
+                "accumulated_state was supplied, but harness.pipeline has no "
+                "accumulated_state_argument"
+            )
+        accumulated_arguments[argument] = accumulated_state
     try:
         with _observe_model_calls(harness), _patched(module, pipe["graph_builder"], lambda: graph):
-            state = run_function(records, **pipe.get("run_arguments", {}), **{pipe["window_state_key"]: model_config})
+            state = run_function(
+                records,
+                **pipe.get("run_arguments", {}),
+                **{pipe["window_state_key"]: model_config},
+                **accumulated_arguments,
+            )
     except HarnessOverflow as overflow:
         verdict = {"passed": False, "integrity_passed": None, "required_evidence_carried": None,
                    "evidence_not_carried": {}, "category": "runtime-overflow", "reason": str(overflow),
@@ -557,7 +578,10 @@ def run_case(case_json: Mapping[str, Any], window: int, *, harness: Harness | No
     definition = {key: case_json[key] for key in ("format", "system", "policy")}
     payload = compose_client_payload(definition, run, case_json["records"])
     outcome = ingest_client_pipeline(json.dumps(payload), codecs).outcome
-    verdict = _verdict(check_graph_integrity(outcome), _carried(outcome, harness), window, harness)
+    carried = _carried(outcome, harness)
+    verdict = _verdict(check_graph_integrity(outcome), carried, window, harness)
+    for record in state.get("trace", []):
+        record["evidence_used"] = carried.get(record["agent"], {})
     return list(state.get("trace", [])), verdict
 
 

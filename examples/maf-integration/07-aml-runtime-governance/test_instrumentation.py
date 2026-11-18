@@ -166,6 +166,16 @@ class RunCaseTests(unittest.TestCase):
         self.assertEqual(record["decision"], "HOLD_FOR_CLINICAL_REVIEW")
         self.assertTrue(verdict["passed"])
 
+    def test_accumulated_state_is_passed_to_the_existing_agent_prompt(self):
+        memory = "retained run memory " * 40
+        trace, verdict = run_case(self.case, 100_000, memory, harness=self.harness)
+        record = self.decision(trace)
+        self.assertIn("[ACCUMULATED HISTORY / MEMORY]", record["assembled_prompt"])
+        self.assertIn(memory, record["assembled_prompt"])
+        self.assertGreater(record["assembled_tokens"], self.assembled)
+        self.assertTrue(verdict["passed"])
+        self.assertTrue(all(record["evidence_used"].values()))
+
     def test_model_visible_runtime_sets_evidence_visible(self):
         case = make_case(lambda h: h["observability"].update(can_capture_model_visible_prompt=True))
         harness = fake_harness(case)

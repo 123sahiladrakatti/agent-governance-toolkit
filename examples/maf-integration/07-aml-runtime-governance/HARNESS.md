@@ -37,6 +37,42 @@ trace, verdict = run_case(case, 1024)   # one reproducible run at num_ctx=1024
 best = smallest_safe_window(case, 1024, 4096)
 ```
 
+## Long-running projection
+
+[`gaco_longrun.py`](gaco_longrun.py) is the advisory sibling to window sizing. It takes a few
+chronological runs, carries the configured agent's retained state from one run to the next, fits
+occupied context against run index, and then synthesizes larger retained state to locate and
+validate the first trace-integrity failure without waiting for months of wall-clock operation.
+
+```bash
+python gaco_longrun.py \
+  --definition client_pipelines/healthcare_pipeline.json \
+  --records harness_cases/healthcare_contraindication.json \
+            harness_cases/healthcare_contraindication.json \
+            harness_cases/healthcare_contraindication.json \
+  --window 4096 \
+  --cadence-seconds 86400
+```
+
+The repeated sample above means three chronological executions of the sample workload, not three
+pre-planted outcomes. In customer use, pass that customer's chronological case files instead. The
+window is an explicit input (or the harness's `model.current_window` when omitted); neither the
+window nor a future run horizon is embedded in the algorithm.
+
+The report contains:
+
+- every measured occupied-context value and retained-memory increment;
+- the linear fit, R², uncertainty bounds, and an explicit poor/insufficient-fit result when needed;
+- the first failing occupied-context interval and the detected onset mechanism (`overflow`,
+  `degradation`, `mixed`, or `indeterminate`);
+- a projected run/time range when the fit supports one; and
+- fresh fast-forward runs just below and at onset, including whether the crossover reproduced.
+
+This is a projection, not a guarantee. It is extrapolated from the supplied runs and assumes the
+measured growth relationship continues. Fast-forwarding is an accelerated proxy made from
+synthesized accumulated context, not a real month of operation. The module advises and warns; it
+does not pin evidence, compact memory, enlarge a window, or otherwise modify client settings.
+
 ### Example result (llama3.1:8b, the contraindication case)
 
 ```text
@@ -134,6 +170,7 @@ model when `num_ctx` changes).
 | `observability.*` | Hooks A and C, visibility flags, overflow detection |
 | `run_entry_point` | Names `instrumentation.run_case(case_json, window)` |
 | `pipeline.*` | `run_case`: which module, nodes, state schema, builder, run function, and config factory to use |
+| `pipeline.accumulated_state_argument` | Optional pass-through used by long-run projection to supply starting history/memory; ordinary runs use an empty value and are unchanged |
 | `evidence_formats` | Hook C structured matching |
 | `agents[]` | One `AgentSpec` per node; every pipeline node must be declared |
 | `sizing.resolution` | `smallest_safe_window` default resolution |

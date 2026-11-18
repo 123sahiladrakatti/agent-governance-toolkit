@@ -75,6 +75,8 @@ class CarePathState(TypedDict):
     llm_config: Optional[Any]
     # Set by the LLM care-decision node: what the agent saw vs. decided (``LLMDecision``).
     llm_decision: Optional[Any]
+    # Optional retained context supplied by the client/runtime. Empty in normal demo runs.
+    accumulated_state: str
     allergy_mode: str
     allergy_llm_config: Optional[Any]
     allergy_redact: bool                     # control: add the redaction instruction to the agent's prompt
@@ -144,7 +146,12 @@ def llm_care_decision_node(state: CarePathState) -> dict:
 
     case = state["case"]
     branches = {agent: state["steps"][agent] for agent in REVIEW_BRANCHES}
-    decision = run_llm_decision(case, branches, state.get("llm_config"))
+    decision = run_llm_decision(
+        case,
+        branches,
+        state.get("llm_config"),
+        state.get("accumulated_state", ""),
+    )
     consumed = list(decision.consumed)
     lost = ", ".join(decision.not_consumed)
     finding = (
@@ -220,6 +227,7 @@ def run_care_path_graph(
     allergy_mode: str = DETERMINISTIC_ALLERGY,
     allergy_llm_config: Any = None,
     allergy_redact: bool = False,
+    accumulated_state: str = "",
 ) -> CarePathState:
     """Execute the compiled graph for one case and return the final LangGraph state."""
 
@@ -235,6 +243,7 @@ def run_care_path_graph(
         "decision_mode": decision_mode,
         "llm_config": llm_config,
         "llm_decision": None,
+        "accumulated_state": accumulated_state,
         "allergy_mode": allergy_mode,
         "allergy_llm_config": allergy_llm_config,
         "allergy_redact": allergy_redact,

@@ -79,10 +79,13 @@ def default_config(**overrides) -> LLMDecisionConfig:
 
 
 def build_case_file(
-    case: HealthcareCase, branches: Mapping[str, TraceStep], config: LLMDecisionConfig
+    case: HealthcareCase,
+    branches: Mapping[str, TraceStep],
+    config: LLMDecisionConfig,
+    accumulated_state: str = "",
 ) -> tuple[str, dict[str, str]]:
     """The care-decision agent's input, plus each report's line for window measurement."""
-    return _build_case_file(HEALTHCARE_DECISION_SPEC, case, branches, config)
+    return _build_case_file(HEALTHCARE_DECISION_SPEC, case, branches, config, accumulated_state)
 
 
 def parse_decision_output(text: str) -> tuple[str, dict[str, str]]:
@@ -94,9 +97,16 @@ def run_llm_decision(
     case: HealthcareCase,
     branches: Mapping[str, TraceStep],
     config: LLMDecisionConfig | None = None,
+    accumulated_state: str = "",
 ) -> LLMDecision:
     """Run the care-decision agent as a real Ollama call and record what it saw vs. decided."""
-    return _run_llm_decision(HEALTHCARE_DECISION_SPEC, case, branches, config or default_config())
+    return _run_llm_decision(
+        HEALTHCARE_DECISION_SPEC,
+        case,
+        branches,
+        config or default_config(),
+        accumulated_state,
+    )
 
 
 __all__ = [
