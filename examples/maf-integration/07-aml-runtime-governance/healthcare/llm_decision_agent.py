@@ -15,7 +15,7 @@ in view, so it is not a reliable full-context control here.
 
 from __future__ import annotations
 
-from typing import Mapping
+from typing import Any, Mapping
 
 from healthcare.system import ALLERGY_AGENT, COVERAGE_AGENT, MEDICATION_AGENT, HealthcareCase
 from llm_decision import DecisionSpec, LLMDecision, LLMDecisionConfig, ReportSpec
@@ -82,7 +82,7 @@ def build_case_file(
     case: HealthcareCase,
     branches: Mapping[str, TraceStep],
     config: LLMDecisionConfig,
-    accumulated_state: str = "",
+    accumulated_state: Any = "",
 ) -> tuple[str, dict[str, str]]:
     """The care-decision agent's input, plus each report's line for window measurement."""
     return _build_case_file(HEALTHCARE_DECISION_SPEC, case, branches, config, accumulated_state)
@@ -97,7 +97,7 @@ def run_llm_decision(
     case: HealthcareCase,
     branches: Mapping[str, TraceStep],
     config: LLMDecisionConfig | None = None,
-    accumulated_state: str = "",
+    accumulated_state: Any = "",
 ) -> LLMDecision:
     """Run the care-decision agent as a real Ollama call and record what it saw vs. decided."""
     return _run_llm_decision(

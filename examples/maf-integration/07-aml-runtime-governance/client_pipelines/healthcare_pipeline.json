@@ -264,6 +264,26 @@
     ],
     "sizing": {
       "resolution": 16
+    },
+    "longrun_demo": {
+      "description": "Side-by-side long-running demo: the same case and window, with little vs. a large synthesized accumulated history in the care-decision agent's context. Case 2 is an accelerated simulation.",
+      "window": 4096,
+      "early_tokens": 200,
+      "aged_tokens": 2400,
+      "cadence_days": 1,
+      "start_date": "2026-01-01",
+      "prompt_builder": "healthcare.llm_decision_agent:build_case_file",
+      "degradation": {
+        "description": "Degradation (lost in the middle): a large window so the buried finding always fits; the history grows by growth_factor until the model stops using the finding or max_aged_tokens is reached.",
+        "window": 16384,
+        "early_tokens": 200,
+        "aged_tokens": 8000,
+        "depth": 0.9,
+        "growth_factor": 1.5,
+        "max_aged_tokens": 28000,
+        "max_window": 32768,
+        "margin_tokens": 512
+      }
     }
   }
 }

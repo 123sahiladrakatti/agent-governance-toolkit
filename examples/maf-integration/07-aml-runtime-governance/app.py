@@ -7,6 +7,7 @@ Run: streamlit run app.py
 from __future__ import annotations
 
 import html
+import json
 import os
 from datetime import date, datetime, time
 from pathlib import Path
@@ -50,6 +51,8 @@ from healthcare.system import DEMO_MEMBER_ID, HealthcareCase, MEDICATION_ALLERGE
 from env_file import load_env_file
 from governed_run import govern_client_run
 from governance_view import CONTRAST_ROWS, FW, build_governance_view
+from instrumentation import case_json_for, load_harness
+from longrun_demo import report_summary, run_degradation_demo, run_demo
 from report_pdf import build_case_report
 
 # Local settings (e.g. AML_LLM_NUM_CTX) from .env, re-read on every run so edits apply without a restart.
@@ -695,6 +698,233 @@ if selected_reference == "Healthcare":
                             file_name=f"governance-report-{r.case.case_id}.pdf", key=f"batch_pdf_{r.row}",
                             help="Full governance detail for this case (identifiers masked).",
                         )
+
+# --------------------------------------------------------------------------- long-running demo (healthcare)
+LONGRUN_CASE_FILE = Path(__file__).parent / "harness_cases" / "healthcare_contraindication.json"
+LONGRUN_MODES = {
+    "overflow": "Overflow (reliable contrast)",
+    "degradation": "Degradation (lost-in-the-middle; may be robust)",
+}
+LONGRUN_PLACEMENTS = {
+    "recent_end": "near end (after the history)",
+    "buried_mid": "buried mid-history",
+    "overflowed": "overflowed (history after it)",
+}
+
+
+def longrun_span(case: dict) -> str:
+    months = case["history_span_days"] / 30.4
+    return f"~{months:.0f} months" if months >= 1.5 else f"~{case['history_span_days']} days"
+
+
+def longrun_yes_no(value: object) -> str:
+    return "yes" if value is True else "no" if value is False else "unknown"
+
+
+def longrun_rows(case: dict, *, kind: str, is_case2: bool, burial_insufficient: bool) -> list[tuple[str, str]]:
+    """The per-case rows, worded as in longrun_demo.format_report / format_degradation_report."""
+    occupied = (f"{case['occupied_tokens']} tokens ({case['history_tokens']} of history, "
+                f"~{case['history_runs']} prior runs over {case['history_span_days']} days)")
+    if kind == "degradation":
+        if case.get("truncated") is False and case["occupied_tokens"] == case["processed_tokens"]:
+            inside = f"yes, NOT truncated ({case['processed_tokens']} of {case['occupied_tokens']} tokens processed)"
+        elif case.get("truncated"):
+            inside = f"no, truncated ({case['processed_tokens']} of {case['occupied_tokens']} processed)"
+        else:
+            inside = "unknown"
+        placement = (LONGRUN_PLACEMENTS["recent_end"] if case["placement"] == "recent_end" else
+                     f"buried deep: {case['depth']:.0%} of the history is newer than it "
+                     f"(~{case['tokens_after_finding']} tokens on top)")
+    else:
+        if case["finding_inside_window"] is True:
+            inside = "yes" if case["placement"] != "buried_mid" else "yes, but buried mid-context"
+        elif case["finding_inside_window"] is False:
+            inside = "no (pushed past the kept window)"
+        else:
+            inside = "unknown"
+        placement = LONGRUN_PLACEMENTS[case["placement"]]
+        if is_case2 and burial_insufficient:
+            placement = f"buried mid-history -> {placement}; burial alone was insufficient"
+    if case["passed"]:
+        check = "PASS"
+    else:
+        check = "CATCHES LOSS" if is_case2 else f"FLAGGED ({case['verdict']['category']})"
+    mechanism = case["mechanism"] or "-"
+    if kind == "degradation" and is_case2 and case["mechanism"]:
+        mechanism = f"{case['mechanism']} (detected)"
+    return [
+        ("occupied context", occupied),
+        ("window", str(case["window"])),
+        ("finding placement" if kind == "overflow" else "finding position", placement),
+        ("finding inside window?", inside),
+        ("agent used finding?", longrun_yes_no(case["agent_used_finding"])),
+        ("decision", str(case["decision"])),
+        ("governance check", check),
+        ("failure mechanism", mechanism),
+    ]
+
+
+def longrun_card(title: str, case: dict, rows: list[tuple[str, str]]) -> str:
+    body = "".join(f'<div style="margin-top:.6rem"><small>{esc(k)}</small><strong>{esc(v)}</strong></div>'
+                   for k, v in rows)
+    return (f'<div class="state-card{"" if case["passed"] else " stale"}">'
+            f'<strong style="margin:0;font-size:1.02rem">{esc(title)}</strong>{body}</div>')
+
+
+def longrun_case2_pill(report: dict) -> str:
+    case2, outcome = report["case2"], report.get("outcome")
+    if case2 is not None and not case2["passed"] and case2["mechanism"] in ("overflow", "degradation"):
+        return f'<span class="pill llm">CASE 2 · CHECK CAUGHT LOSS · {esc(case2["mechanism"].upper())}</span>'
+    if outcome == "robust":
+        return (f'<span class="pill fallback">CASE 2 · NO LOSS OBSERVED · ROBUST UP TO '
+                f'{esc(report["max_history_tested"])} TOKENS</span>')
+    if outcome == "window-ceiling":
+        return '<span class="pill fallback">CASE 2 · WINDOW CEILING REACHED · NOT TESTED FURTHER</span>'
+    if case2 is not None and not case2["passed"]:
+        return (f'<span class="pill fallback">CASE 2 · CHECK FLAGGED · '
+                f'{esc((case2["mechanism"] or "indeterminate").upper())} (NOT A CONTEXT-LOSS RESULT)</span>')
+    return '<span class="pill fallback">CASE 2 · NO LOSS OBSERVED</span>'
+
+
+def longrun_run_rows(runs: list[dict]) -> list[dict]:
+    return [{
+        "placement": run["placement"],
+        "window": run["window"],
+        "history tokens": run["history_tokens"],
+        "occupied": run["occupied_tokens"],
+        "processed": run["processed_tokens"],
+        "truncated": run["truncated"],
+        "finding used": longrun_yes_no(run["agent_used_finding"]),
+        "check": "PASS" if run["passed"] else "FAIL",
+        "mechanism": run["mechanism"] or "-",
+        **({"valid": "INVALID (truncated)" if run.get("invalid") else "yes"} if "inside_window_proven" in run else {}),
+    } for run in runs]
+
+
+if selected_reference == "Healthcare":
+    st.markdown('<p class="section-label">LONG-RUNNING · EARLY VS. AGED CONTEXT</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<h2 class="section-title">The same case after simulated months of accumulated history</h2>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<p class="section-help">Same system, same data, same window: only the amount of accumulated history in '
+        "the care-decision agent's context changes. Early runs are clean; after simulated months the required "
+        "finding is lost and the governance check catches it. Case 2 is an <b>accelerated simulation</b>: the "
+        "history is synthesized prior-run notes (checked never to contain the finding), not months of real "
+        f"operation. Sample case: <code>harness_cases/{esc(LONGRUN_CASE_FILE.name)}</code>.</p>",
+        unsafe_allow_html=True,
+    )
+    try:
+        longrun_case = case_json_for(
+            str(PIPELINE_PATH), json.loads(LONGRUN_CASE_FILE.read_text(encoding="utf-8")),
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        longrun_case = None
+        st.error(f"The long-running demo case could not be loaded: {exc}")
+    if longrun_case is not None:
+        longrun_mode = {label: key for key, label in LONGRUN_MODES.items()}[st.radio(
+            "Long-running demo mode", tuple(LONGRUN_MODES.values()), horizontal=True, key="longrun_mode",
+        )]
+        # Defaults come from harness.longrun_demo in the client pipeline JSON (nothing hardcoded here). The
+        # harness itself is loaded on click: loading it contacts Ollama to verify the tokenizer and template.
+        longrun_cfg = dict(longrun_case["harness"].get("longrun_demo", {}))
+        if longrun_mode == "degradation":
+            longrun_cfg = {**longrun_cfg, **longrun_cfg.get("degradation", {})}
+        cfg_path = "harness.longrun_demo" + (".degradation" if longrun_mode == "degradation" else "")
+        needed = {"window": "window", "early": "early_tokens", "aged": "aged_tokens"}
+        if longrun_mode == "degradation":
+            needed["depth"] = "depth"
+        missing_cfg = [key for key in needed.values() if longrun_cfg.get(key) is None]
+        if missing_cfg:
+            st.warning(f"Set {', '.join(missing_cfg)} in {cfg_path} of the client pipeline JSON to run this mode.")
+        else:
+            st.caption(
+                f"Care-decision agent: {longrun_case['harness']['model']['name']} via Ollama. Defaults from "
+                f"{cfg_path} in client_pipelines/{PIPELINE_PATH.name}; each run makes real LLM calls (15-60s+ each"
+                + ("; the degradation sweep runs several of them and can take minutes" if longrun_mode == "degradation"
+                   else "; Case 2 may run twice") + ")."
+            )
+            input_cols = st.columns(4 if longrun_mode == "degradation" else 3)
+            longrun_inputs = {
+                name: input_cols[i].number_input(
+                    {"window": "Window (tokens)", "early": "Case 1 history (tokens)",
+                     "aged": "Case 2 history (tokens)"}[name],
+                    min_value=1, value=int(longrun_cfg[key]), step=1, key=f"longrun_{longrun_mode}_{name}",
+                )
+                for i, (name, key) in enumerate((n, k) for n, k in needed.items() if n != "depth")
+            }
+            if longrun_mode == "degradation":
+                longrun_inputs["depth"] = input_cols[3].number_input(
+                    "Depth (share of history newer than the finding)", min_value=0.05, max_value=0.95,
+                    value=float(longrun_cfg["depth"]), step=0.05, key="longrun_degradation_depth",
+                )
+            longrun_reports = st.session_state.setdefault("longrun_reports", {})
+            run_label = "Run overflow demo" if longrun_mode == "overflow" else "Run degradation demo"
+            if st.button(run_label, key=f"longrun_run_{longrun_mode}"):
+                longrun_reports.pop(longrun_mode, None)
+                with st.spinner(f"{run_label}: real Ollama calls in progress"):
+                    try:
+                        longrun_harness = load_harness(longrun_case)
+                        if longrun_mode == "overflow":
+                            longrun_report = run_demo(
+                                longrun_case, int(longrun_inputs["window"]), int(longrun_inputs["early"]),
+                                int(longrun_inputs["aged"]), harness=longrun_harness,
+                            )
+                        else:
+                            longrun_report = run_degradation_demo(
+                                longrun_case, int(longrun_inputs["window"]), int(longrun_inputs["early"]),
+                                int(longrun_inputs["aged"]), float(longrun_inputs["depth"]), harness=longrun_harness,
+                            )
+                    except (RuntimeError, ValueError, OSError, KeyError) as exc:
+                        longrun_reports[longrun_mode] = {"error": str(exc)}
+                    else:
+                        longrun_reports[longrun_mode] = {"report": longrun_report}
+            stored = longrun_reports.get(longrun_mode)
+            if stored and stored.get("error"):
+                st.error(f"The long-running demo could not run: {stored['error']}")
+            elif stored:
+                longrun_report = stored["report"]
+                kind = longrun_report.get("kind", "overflow")
+                burial = bool(longrun_report.get("burial_alone_insufficient"))
+                case1, case2 = longrun_report["case1"], longrun_report["case2"]
+                left, right = st.columns(2)
+                left.markdown(longrun_card(
+                    "Case 1 (early)", case1,
+                    longrun_rows(case1, kind=kind, is_case2=False, burial_insufficient=burial),
+                ), unsafe_allow_html=True)
+                if case2 is None:
+                    right.warning("No Case 2 run fit inside the configured ceiling window, so nothing was tested.")
+                else:
+                    suffix = "buried deep" if kind == "degradation" else "simulated"
+                    right.markdown(longrun_card(
+                        f"Case 2 ({longrun_span(case2)} of history, {suffix})", case2,
+                        longrun_rows(case2, kind=kind, is_case2=True, burial_insufficient=burial),
+                    ), unsafe_allow_html=True)
+                headline, notes = report_summary(longrun_report)
+                case1_pill = ('<span class="pill live">CASE 1 · CHECK PASSED</span>' if case1["passed"] else
+                              f'<span class="pill fallback">CASE 1 · CHECK FLAGGED · '
+                              f'{esc(case1["verdict"]["category"])}</span>')
+                st.markdown(
+                    f'<div class="loss"><h3>Outcome</h3><p>{esc(headline)}</p>'
+                    f'<p>{case1_pill}{longrun_case2_pill(longrun_report)}'
+                    '<span class="pill">ACCELERATED SIMULATION</span></p>'
+                    f'<ul>{"".join(f"<li>{esc(n)}</li>" for n in notes)}</ul></div>',
+                    unsafe_allow_html=True,
+                )
+                if kind == "degradation":
+                    st.markdown("**Escalation sweep** (each row is a real run; only non-truncated runs count as "
+                                "degradation evidence)")
+                    st.dataframe(longrun_run_rows(longrun_report["sweep"]), hide_index=True, width="stretch")
+                elif burial:
+                    st.markdown("**Case 2 attempts** (the buried run kept the finding, so the history was grown "
+                                "past the window)")
+                    st.dataframe(longrun_run_rows(longrun_report["case2_attempts"]), hide_index=True, width="stretch")
+                st.download_button(
+                    "Download full report (JSON, with traces)",
+                    data=json.dumps(longrun_report, indent=2, default=str), mime="application/json",
+                    file_name=f"longrun-{kind}-report.json", key=f"longrun_json_{longrun_mode}",
+                )
 
 result = st.session_state.get("governance_review")
 if result is None or result["domain"] != selected_reference or result.get("decision_mode") != decision_mode:

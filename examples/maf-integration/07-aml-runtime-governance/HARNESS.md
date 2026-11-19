@@ -95,6 +95,99 @@ smallest safe window found (to within 16 tokens), against an advertised 131,072.
 the prompt size (1,384) still truncates: Ollama needs the prompt to be strictly smaller than
 `num_ctx`, so the true threshold lies between 1,385 and 1,396.
 
+## Long-running demo: early vs. aged context
+
+[`longrun_demo.py`](longrun_demo.py) shows the same case, the same window and the same check twice:
+once with a little accumulated history (Case 1) and once with a large one (Case 2). Only the amount
+of history in the care-decision agent's context changes.
+
+```bash
+python longrun_demo.py                               # window/sizes from harness.longrun_demo
+python longrun_demo.py --window 4096 --early 200 --aged 2400 --json report.json
+```
+
+- **History** is synthesized prior-run notes (routing, queue, audit, handoff entries), sized with the
+  harness's real tokenizer and dated one run per `cadence_days`. A guard refuses any filler that
+  matches the evidence format or contains the finding's words, so the demo can't be rigged.
+- **Placement** of the finding relative to that history:
+  - `recent_end`: all history before the finding (Case 1).
+  - `buried_mid`: half before and half after, inside the window (Case 2's first try).
+  - `overflowed`: the history grows past the window after the finding (Case 2's retry, used only
+    when burial alone doesn't lose it).
+- **Mechanism** is what the trace measured:
+  - `overflow`: the runtime processed fewer tokens than were assembled, and the finding was in the
+    dropped part.
+  - `degradation`: the finding was inside the kept window but the agent didn't use it.
+  - `indeterminate`: the trace can't settle it.
+
+The history is passed through the existing `accumulated_state` argument. A mapping
+`{"before_finding": ..., "after_finding": ...}` places it around the finding; a plain string keeps
+the original single slot, and an empty value leaves the prompt byte-identical.
+
+### Live result (llama3.1:8b, window 4096)
+
+```text
+|                        | Case 1 (early)                                          | Case 2 (~4 months of history, simulated)                                           |
+|------------------------|---------------------------------------------------------|------------------------------------------------------------------------------------|
+| occupied context       | 1620 tokens (227 of history, ~7 prior runs over 6 days) | 5521 tokens (4128 of history, ~128 prior runs over 127 days)                       |
+| window                 | 4096                                                    | 4096                                                                               |
+| finding placement      | near end (after the history)                            | buried mid-history -> overflowed (history after it); burial alone was insufficient |
+| finding inside window? | yes                                                     | no (pushed past the kept window)                                                   |
+| agent used finding?    | yes                                                     | no                                                                                 |
+| decision               | HOLD_FOR_CLINICAL_REVIEW                                | APPROVE_TREATMENT                                                                  |
+| governance check       | PASS                                                    | CATCHES LOSS                                                                       |
+| failure mechanism      | -                                                       | overflow                                                                           |
+```
+
+Burying the finding in the middle of 2,423 tokens of history (3,825 occupied, inside the window) did
+not lose it: llama3.1:8b still used it and the check passed, so no degradation was observed at this
+size. The loss came when the history grew past the window: 5,521 tokens assembled, 2,050 processed,
+and the finding was in the dropped part.
+
+Case 2 is an accelerated simulation, not months of real operation. Case 1 shows no loss observed in
+these runs, which is not a guarantee of zero loss. These are real LLM runs, so results are
+probabilistic.
+
+## Degradation demo: inside the window, but unused
+
+The overflow demo loses the finding because it falls out of the window. The degradation demo tests
+the other long-running failure ("lost in the middle"): the finding stays **inside** the window the
+whole time, buried under a large pile of newer history, and the question is whether the model stops
+using it.
+
+```bash
+python longrun_demo.py --mode degradation          # settings from harness.longrun_demo.degradation
+python longrun_demo.py --mode degradation --window 16384 --aged 8000 --depth 0.9 --json report.json
+```
+
+- **Large window.** llama3.1:8b handles a 4k context easily, so the demo uses a large window
+  (`window`, default 16,384) to leave room to bury the finding deep while it still fits.
+- **`depth`** is the fraction of the history that is newer than the finding. At the default 0.9, the
+  newest 90% of the history sits on top of it.
+- **No truncation, proven.** A Case 2 run only counts as degradation evidence if the runtime processed
+  every assembled token (`processed_tokens == assembled_tokens`). A truncated run is marked invalid
+  and retried with a larger window (up to `max_window`), so an overflow is never reported as
+  degradation.
+- **Escalation sweep.** If the model still uses the finding, the history grows by `growth_factor`
+  (and the window with it) up to `max_aged_tokens`. The first size where the model stops using the
+  finding is reported as the degradation onset.
+- **If no onset is found**, the report says "no degradation observed up to N tokens; the model held
+  the finding throughout". It never manufactures a loss.
+
+### Live result (llama3.1:8b, depth 0.9): robust
+
+| History tokens | Occupied / processed | Window | Finding used? | Check |
+|---|---|---|---|---|
+| 8,027 | 9,429 / 9,429 | 16,384 | yes | PASS |
+| 12,030 | 13,432 / 13,432 | 16,384 | yes | PASS |
+| 18,024 | 19,426 / 19,426 | 24,576 | yes | PASS |
+| 27,029 | 28,431 / 28,431 | 32,768 | yes | PASS |
+
+No degradation observed up to 27,029 tokens of accumulated history. With the finding buried under the
+newest 90% of it, inside the window and never truncated, llama3.1:8b held the finding throughout. No
+loss observed in these runs. The synthesized history is deliberately neutral and repetitive (so it
+can't rig the result), which is also easy for a model to skip past.
+
 ## What `load_harness` checks
 
 It refuses to load, with a `HarnessConfigError`, unless:

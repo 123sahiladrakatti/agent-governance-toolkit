@@ -23,7 +23,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Callable, Mapping
+from typing import Any, Callable, Mapping
 
 import httpx
 
@@ -123,21 +123,31 @@ def build_case_file(
     records: object,
     branches: Mapping[str, TraceStep],
     config: LLMDecisionConfig,
-    accumulated_state: str = "",
+    accumulated_state: Any = "",
 ) -> tuple[str, dict[str, str]]:
-    """The decision agent's input, plus each report's line for window measurement."""
+    """The decision agent's input, plus each report's line for window measurement.
+
+    ``accumulated_state`` is retained history/memory. A plain string goes after the early
+    report(s); a mapping may also place history before them:
+    ``{"before_finding": str, "after_finding": str}``. Empty adds nothing.
+    """
 
     lines = {report.agent: _report_line(spec, report, branches[report.agent], records) for report in spec.reports}
     keys = ", ".join(f'"{report.key}": "{spec.status_hint}"' for report in spec.reports)
-    retained_history = (
-        ["[ACCUMULATED HISTORY / MEMORY]", accumulated_state]
-        if accumulated_state
-        else []
-    )
+    if isinstance(accumulated_state, Mapping):
+        before = str(accumulated_state.get("before_finding") or "")
+        after = str(accumulated_state.get("after_finding") or "")
+    else:
+        before, after = "", str(accumulated_state or "")
+
+    def history(text: str) -> list[str]:
+        return ["[ACCUMULATED HISTORY / MEMORY]", text] if text else []
+
     prompt = "\n".join([
         f"{spec.file_title} {spec.record_id(records)} - branch reports and case activity, in arrival order.",
+        *history(before),
         *(lines[report.agent] for report in spec.reports if report.early),
-        *retained_history,
+        *history(after),
         spec.log_title,
         _activity_log(spec, records, config.activity_log_lines),
         *(lines[report.agent] for report in spec.reports if not report.early),
@@ -278,7 +288,7 @@ def run_llm_decision(
     records: object,
     branches: Mapping[str, TraceStep],
     config: LLMDecisionConfig | None = None,
-    accumulated_state: str = "",
+    accumulated_state: Any = "",
 ) -> LLMDecision:
     """Run the decision agent as a real Ollama call and record what it saw vs. decided."""
 

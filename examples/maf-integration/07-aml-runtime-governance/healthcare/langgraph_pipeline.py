@@ -76,7 +76,7 @@ class CarePathState(TypedDict):
     # Set by the LLM care-decision node: what the agent saw vs. decided (``LLMDecision``).
     llm_decision: Optional[Any]
     # Optional retained context supplied by the client/runtime. Empty in normal demo runs.
-    accumulated_state: str
+    accumulated_state: Any   # str, or {"before_finding": str, "after_finding": str}
     allergy_mode: str
     allergy_llm_config: Optional[Any]
     allergy_redact: bool                     # control: add the redaction instruction to the agent's prompt
@@ -227,7 +227,7 @@ def run_care_path_graph(
     allergy_mode: str = DETERMINISTIC_ALLERGY,
     allergy_llm_config: Any = None,
     allergy_redact: bool = False,
-    accumulated_state: str = "",
+    accumulated_state: Any = "",
 ) -> CarePathState:
     """Execute the compiled graph for one case and return the final LangGraph state."""
 
