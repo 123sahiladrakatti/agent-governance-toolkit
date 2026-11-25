@@ -1,0 +1,140 @@
+{
+  "kind": "gaco-window-suggestion",
+  "advisory": true,
+  "model": "llama3.1:8b",
+  "case_id": "HC-HARNESS-01",
+  "finding": {
+    "id": "allergy-safety",
+    "version": 2,
+    "finding": "contraindication"
+  },
+  "floor": {
+    "floor": 1544,
+    "prompt_tokens": 1384,
+    "output_room_tokens": 160,
+    "output_room_source": "model config num_predict",
+    "margin_tokens": 0,
+    "agent": "care-decision",
+    "required_evidence": [
+      "allergy-safety",
+      "medication-review",
+      "coverage-review"
+    ],
+    "finding": {
+      "id": "allergy-safety",
+      "version": 2,
+      "finding": "contraindication"
+    },
+    "tag": "measured"
+  },
+  "initial_window": 4096,
+  "suggested_window": {
+    "tokens": 1544,
+    "tag": "found-by-search"
+  },
+  "found": true,
+  "direction": "down",
+  "comparison": {
+    "relation": "smaller",
+    "delta_tokens": 2552,
+    "percent_of_initial": 62.3
+  },
+  "search": {
+    "floor": 1544,
+    "initial_window": 4096,
+    "lo": 1544,
+    "hi": 131072,
+    "resolution": 16,
+    "initial_probed": true,
+    "initial_passed": true,
+    "direction": "down",
+    "found": true,
+    "suggested_window": 1544,
+    "search_candidate": 1544,
+    "widened": false,
+    "stop_reason": null,
+    "probes": [
+      [
+        4096,
+        true
+      ],
+      [
+        1544,
+        true
+      ],
+      [
+        1544,
+        true
+      ]
+    ],
+    "probe_details": [
+      {
+        "window": 4096,
+        "passed": true,
+        "category": null,
+        "reason": "Graph provenance and consumed parent versions are consistent.",
+        "assembled_tokens": 1384,
+        "processed_tokens": 1384,
+        "truncated": false,
+        "decision": "HOLD_FOR_CLINICAL_REVIEW",
+        "evidence_check": "measured-only",
+        "model_calls": 4,
+        "purpose": "initial"
+      },
+      {
+        "window": 1544,
+        "passed": true,
+        "category": null,
+        "reason": "Graph provenance and consumed parent versions are consistent.",
+        "assembled_tokens": 1384,
+        "processed_tokens": 1384,
+        "truncated": false,
+        "decision": "HOLD_FOR_CLINICAL_REVIEW",
+        "evidence_check": "measured-only",
+        "model_calls": 4,
+        "purpose": "floor"
+      },
+      {
+        "window": 1544,
+        "passed": true,
+        "category": null,
+        "reason": "Graph provenance and consumed parent versions are consistent.",
+        "assembled_tokens": 1384,
+        "processed_tokens": 1384,
+        "truncated": false,
+        "decision": "HOLD_FOR_CLINICAL_REVIEW",
+        "evidence_check": "measured-only",
+        "model_calls": 4,
+        "purpose": "confirm"
+      }
+    ],
+    "violations": [],
+    "monotonic": true
+  },
+  "probes": [
+    [
+      4096,
+      true
+    ],
+    [
+      1544,
+      true
+    ],
+    [
+      1544,
+      true
+    ]
+  ],
+  "model_runs": 3,
+  "model_calls": 12,
+  "evidence_check": "measured-only",
+  "confidence": "Confidence: the floor (1544 tokens) is measured (exact tokenizer count, no model runs); the suggested window (1544) was found by search over 3 real runs and passed on all 2 run(s) at that window (it is re-run before it is suggested); the probe results were monotonic; evidence check: measured-only.",
+  "settings": {
+    "advertised_window": 131072,
+    "max_window": 131072,
+    "floor_margin_tokens": 0,
+    "growth_factor": 2.0,
+    "confirm_probes": 1,
+    "resolution": 16
+  }
+}

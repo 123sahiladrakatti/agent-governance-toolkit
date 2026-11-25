@@ -51,6 +51,7 @@ from healthcare.system import DEMO_MEMBER_ID, HealthcareCase, MEDICATION_ALLERGE
 from env_file import load_env_file
 from governed_run import govern_client_run
 from governance_view import CONTRAST_ROWS, FW, build_governance_view
+import gaco
 from instrumentation import case_json_for, load_harness
 from longrun_demo import report_summary, run_degradation_demo, run_demo
 from report_pdf import build_case_report
@@ -925,6 +926,183 @@ if selected_reference == "Healthcare":
                     data=json.dumps(longrun_report, indent=2, default=str), mime="application/json",
                     file_name=f"longrun-{kind}-report.json", key=f"longrun_json_{longrun_mode}",
                 )
+
+# --------------------------------------------------------------------------- GACO window suggestion (healthcare)
+GACO_CASE_FILE = Path(__file__).parent / "harness_cases" / "healthcare_contraindication.json"
+GACO_SAVED_REPORT = Path(__file__).parent / "gaco_report.json"
+GACO_SAVED_COMMAND = "python gaco.py --initial-window 4096 --json gaco_report.json"
+GACO_SOURCES = ("Load saved report", "Run GACO live")
+
+
+def gaco_tokens(value: object) -> int | None:
+    """A window/token number stored bare or as an object ({"tokens": n} or {"floor": n})."""
+    if isinstance(value, dict):
+        value = value.get("tokens", value.get("floor"))
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def gaco_probe_rows(report: dict) -> list[dict]:
+    details = (report.get("search") or {}).get("probe_details")
+    if details:
+        return [{
+            "#": i,
+            "window": d.get("window"),
+            "purpose": d.get("purpose", ""),
+            "result": "PASS" if d.get("passed") else "FAIL",
+            "assembled tokens": d.get("assembled_tokens"),
+            "processed tokens": d.get("processed_tokens"),
+            "truncated": d.get("truncated"),
+            "failure category": "" if d.get("passed") else (d.get("category") or ""),
+        } for i, d in enumerate(details, 1)]
+    rows = []
+    for i, probe in enumerate(report.get("probes") or (report.get("search") or {}).get("probes") or [], 1):
+        if isinstance(probe, dict):
+            row = {"#": i, "window": probe.get("window"), "result": "PASS" if probe.get("passed") else "FAIL"}
+            for key, label in (("assembled_tokens", "assembled tokens"), ("processed_tokens", "processed tokens")):
+                if key in probe:
+                    row[label] = probe[key]
+        else:
+            window, passed = (list(probe) + [None, None])[:2]
+            row = {"#": i, "window": window, "result": "PASS" if passed else "FAIL"}
+        rows.append(row)
+    return rows
+
+
+def render_gaco_report(report: dict, source: str) -> None:
+    search = report.get("search") or {}
+    rows = gaco_probe_rows(report)
+    floor = gaco_tokens(report.get("floor"))
+    suggested = gaco_tokens(report.get("suggested_window"))
+    initial = gaco_tokens(report.get("initial_window"))
+    found = bool(report.get("found")) and suggested is not None
+    runs = next((report[k] for k in ("model_runs", "runs_used") if isinstance(report.get(k), int)), len(rows))
+    finding = report.get("finding") or {}
+    st.caption(
+        f"Source: {source} · model {report.get('model', 'unknown')} · case {report.get('case_id', 'unknown')}"
+        + (f" · tracked finding {finding.get('id')} v{finding.get('version')} ({finding.get('finding')})"
+           if finding else "")
+    )
+    if found:
+        if initial is None:
+            relation = ""
+        elif suggested == initial:
+            relation = f"(the same as the initial {initial})."
+        else:
+            side = "below" if suggested < initial else "above"
+            relation = f"({abs(suggested - initial)} tokens {side} the initial {initial})."
+        st.markdown(
+            '<div class="verdict continue"><div class="label">GACO SUGGESTION · ADVISORY</div>'
+            f'<h2>Suggested window: {esc(suggested)}</h2><p>{esc(relation)}</p>'
+            "<p>A recommendation only: nothing in the client's pipeline or settings was changed.</p></div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        ceiling = search.get("hi") or (report.get("settings") or {}).get("max_window")
+        reason = search.get("stop_reason")
+        st.markdown(
+            '<div class="verdict review"><div class="label">GACO SUGGESTION · ADVISORY</div>'
+            "<h2>No safe window found</h2>"
+            f"<p>No window passed up to the ceiling{esc(f' of {ceiling} tokens' if ceiling else '')}"
+            f"{esc(f' ({reason})' if reason else '')}. The case may not fit this model's window at all: it may "
+            "need less per-case evidence, or a model with a larger context window.</p></div>",
+            unsafe_allow_html=True,
+        )
+    facts = [
+        ("Floor · measured", floor if floor is not None else "—"),
+        ("Suggested · found by search", suggested if found else "—"),
+        ("Initial window (client)", initial if initial is not None else "—"),
+        ("Direction", report.get("direction", "—")),
+        ("Real model runs used", runs),
+    ]
+    st.markdown(
+        '<div class="why-grid">'
+        + "".join(f"<div><small>{esc(k)}</small><strong>{esc(v)}</strong></div>" for k, v in facts)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+    floor_parts = report.get("floor") if isinstance(report.get("floor"), dict) else {}
+    if floor_parts.get("prompt_tokens") is not None:
+        st.caption(
+            f"Floor = {floor_parts.get('prompt_tokens')} prompt tokens + {floor_parts.get('output_room_tokens')} "
+            f"reply room ({floor_parts.get('output_room_source', 'config')}) + "
+            f"{floor_parts.get('margin_tokens', 0)} margin, for {floor_parts.get('agent', 'the decision agent')}. "
+            "Counted with the runtime's tokenizer; no model runs."
+        )
+    st.markdown("**Probe ladder** (each row is one real run of the clean case, in the order GACO ran it)")
+    if rows:
+        st.dataframe(rows, hide_index=True, width="stretch")
+    else:
+        st.info("No probes were run: the measured floor is already above the ceiling.")
+    if search.get("violations"):
+        st.warning("Monotonicity violated, so it was treated as model variance and the suggestion was widened: "
+                   + "; ".join(search["violations"]))
+    notes = list(getattr(gaco, "NOTES", ())) or [
+        "Advisory: GACO suggests a window; it does not change the client's pipeline or settings.",
+        "The search finds where the required evidence fits and survives; it does not prove the model reasons "
+        "over it well in every case.",
+        "This is for the shown case only; across a workload, take the largest suggested window.",
+    ]
+    if rows and all(row["result"] == "PASS" for row in rows):
+        notes.append(
+            "Every probe passed: this is a clean case. The floor is an exact count and the search confirmed it, "
+            "rather than resolving a failure. GACO never probes below the floor, so it cannot suggest less."
+        )
+    if report.get("evidence_check") == "measured-only" or any(
+            d.get("evidence_check") == "measured-only" for d in search.get("probe_details") or []):
+        notes.append(
+            "Measured-only: this runtime cannot expose the model-visible prompt, so 'fits and survives' is measured "
+            "from token counts and the runtime's processed-token count, not verified against what the model saw."
+        )
+    confidence = f"<p>{esc(report['confidence'])}</p>" if report.get("confidence") else ""
+    st.markdown(
+        '<div class="loss"><h3>What this does and does not show</h3>' + confidence
+        + f'<ul>{"".join(f"<li>{esc(n)}</li>" for n in notes)}</ul></div>',
+        unsafe_allow_html=True,
+    )
+
+
+if selected_reference == "Healthcare":
+    st.markdown('<p class="section-label">GACO · SMALLEST SAFE CONTEXT WINDOW</p>', unsafe_allow_html=True)
+    st.markdown('<h2 class="section-title">GACO · smallest safe context window</h2>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="section-help">GACO suggests the smallest window at which this case\'s required evidence fits '
+        "and survives, and shows how far the client's current setting is from it. It is <b>advisory</b>: a "
+        "recommendation, not a change to the pipeline. Sample case: "
+        f"<code>harness_cases/{esc(GACO_CASE_FILE.name)}</code>.</p>",
+        unsafe_allow_html=True,
+    )
+    gaco_source = st.radio("GACO report source", GACO_SOURCES, horizontal=True, key="gaco_source")
+    if gaco_source == GACO_SOURCES[0]:
+        if not GACO_SAVED_REPORT.exists():
+            st.info(f"No saved GACO report yet. Create one from this folder with: `{GACO_SAVED_COMMAND}`")
+        else:
+            try:
+                gaco_saved = json.loads(GACO_SAVED_REPORT.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                st.error(f"{GACO_SAVED_REPORT.name} could not be read: {exc}")
+            else:
+                render_gaco_report(gaco_saved, GACO_SAVED_REPORT.name)
+    else:
+        st.caption("A live run makes several real llama3.1:8b calls through Ollama and takes about a minute.")
+        gaco_initial = st.number_input("Client's initial context window (tokens)", min_value=1, value=4096,
+                                       step=1, key="gaco_initial_window")
+        if st.button("Run GACO", key="gaco_run"):
+            st.session_state.pop("gaco_live", None)
+            with st.spinner("Running GACO: several real llama3.1:8b calls, about a minute"):
+                try:
+                    gaco_case = case_json_for(
+                        str(PIPELINE_PATH), json.loads(GACO_CASE_FILE.read_text(encoding="utf-8")),
+                    )
+                    gaco_report = gaco.optimize(gaco_case, int(gaco_initial), harness=load_harness(gaco_case))
+                except (RuntimeError, ValueError, OSError, KeyError, AssertionError) as exc:
+                    st.session_state.gaco_live = {"error": str(exc)}
+                else:
+                    st.session_state.gaco_live = {"report": gaco_report}
+        gaco_live = st.session_state.get("gaco_live")
+        if gaco_live and gaco_live.get("error"):
+            st.error(f"GACO could not run: {gaco_live['error']}")
+        elif gaco_live:
+            render_gaco_report(gaco_live["report"], "live run")
 
 result = st.session_state.get("governance_review")
 if result is None or result["domain"] != selected_reference or result.get("decision_mode") != decision_mode:

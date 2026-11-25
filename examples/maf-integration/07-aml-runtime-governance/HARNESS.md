@@ -188,6 +188,35 @@ newest 90% of it, inside the window and never truncated, llama3.1:8b held the fi
 loss observed in these runs. The synthesized history is deliberately neutral and repetitive (so it
 can't rig the result), which is also easy for a model to skip past.
 
+## GACO: suggest the smallest safe window (advisory)
+
+`gaco.py` suggests a context window for one case; it never sets one or edits the client's pipeline.
+Run `python gaco.py --initial-window 4096` (add `--json gaco_report.json` for the full report, or
+`--definition` / `--records` for another case). It first measures the **floor** with no model runs:
+the exact token count of the decision agent's assembled prompt, plus the reply room the agent
+requests (`num_predict`), plus an optional `floor_margin_tokens`. It then probes your initial window
+with one real run of the clean case (no synthesized history). If that run passes, it binary-searches
+down toward the floor; if it fails, it grows the window (`growth_factor`) up to
+`model.advertised_window` or `harness.gaco.max_window`, then searches back down. A window is only
+suggested after it passes a repeat run, and it must sit above every window that ever failed. The last
+line is the answer: `Suggested context window: W  (N tokens below / above your initial setting of
+<initial>).` Above that line, the report prints every probe, so you can audit the search. The floor
+is tagged *measured*, and the suggestion *found-by-search*. The suggestion fits *this* case only: for
+a workload, run several sample cases and take the largest suggestion. The suggestion means the
+evidence fits and survives; it does not prove the model reasons over it well. On this Ollama runtime
+the evidence check is *measured-only*. All settings are optional and live in `harness.gaco`.
+
+### Live result (llama3.1:8b, the contraindication case)
+
+| Initial window | Probes (each a real run) | Suggested |
+|---|---|---|
+| 4,096 (PASS) | 4096 PASS → 1544 PASS → 1544 PASS (repeat) | **1,544** (2,552 below) |
+| 1,024 (below the floor, not probed) | 1544 PASS → 1544 PASS (repeat) | **1,544** (520 above) |
+
+The floor is 1,544 = 1,384 prompt + 160 reply room. The runtime processed exactly 1,384 tokens on
+every probe, which matches the measured prompt count. For this clean case, the floor already passes,
+so the search confirms it. GACO never probes below the floor, so it can't suggest less than that.
+
 ## What `load_harness` checks
 
 It refuses to load, with a `HarnessConfigError`, unless:

@@ -284,6 +284,14 @@
         "max_window": 32768,
         "margin_tokens": 512
       }
+    },
+    "gaco": {
+      "description": "GACO window optimizer (advisory). Suggests the smallest context window at which this case's required evidence fits, survives and is carried into the decision; it never sets the window. Floor = exact token count of the decision agent's assembled prompt + output room + floor_margin_tokens. The search is capped at model.advertised_window (or max_window, if set and smaller).",
+      "prompt_builder": "healthcare.llm_decision_agent:build_case_file",
+      "output_room_field": "num_predict",
+      "floor_margin_tokens": 0,
+      "growth_factor": 2,
+      "confirm_probes": 1
     }
   }
 }
