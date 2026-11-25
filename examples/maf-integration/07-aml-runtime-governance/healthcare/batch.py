@@ -1,9 +1,8 @@
 """Backend batch of healthcare cases: read an Excel file and govern every case.
 
 Reads ``batch_cases/healthcare_cases.xlsx`` (one row per case), validates it, and
-runs each case through the same LLM simulation and ``govern_client_run`` path the
-interactive form uses. A case whose LLM call or ingestion fails becomes an error
-row; the batch carries on.
+runs each case through the same pipeline ingestion and ``govern_client_run`` path.
+A case whose model call or ingestion fails becomes an error row; the batch carries on.
 """
 
 from __future__ import annotations
@@ -16,6 +15,8 @@ from typing import Any, Callable, Mapping
 from governed_run import GovernedRun, govern_client_run
 from healthcare.client_payload import (
     HEALTHCARE_RECORD_CODECS,
+    allergy_finding,
+    simulate_healthcare_case,
     simulate_healthcare_case_llm,
     simulate_healthcare_case_llm_pii,
 )
@@ -31,7 +32,11 @@ BATCH_LIMIT = 10  # LLM runs take 15-60 s each
 MEDICATIONS = ("Acetaminophen", *MEDICATION_ALLERGENS)
 KNOWN_ALLERGIES = ("none", "penicillin", "cephalosporin", "NSAID")
 MEMBER_ID_FORMAT = re.compile(r"^MBR-\d{4}-\d{4}-\d{2}$")  # synthetic member numbers only
-BATCH_MODES = {"llm-context-loss": "Context loss (care-decision agent)", "llm-pii-leak": "PII leak (allergy agent)"}
+BATCH_MODES = {
+    "deterministic": "Deterministic batch",
+    "llm-context-loss": "Context loss (care-decision agent)",
+    "llm-pii-leak": "PII leak (allergy agent)",
+}
 VERDICT_LABELS = {"allow": "CONTINUE", "require_approval": "HUMAN REVIEW", "deny": "BLOCK"}
 _TRUE = {"true", "yes", "y", "1"}
 _FALSE = {"false", "no", "n", "0"}
@@ -209,6 +214,7 @@ def run_healthcare_batch(
     decision_config: Any = None,
     allergy_config: Any = None,
     on_case: Callable[[int, int, BatchCase], None] | None = None,
+    on_result: Callable[[int, BatchResult], None] | None = None,
     content_checker: Callable[[str], Any] | None = None,
 ) -> list[BatchResult]:
     """Govern each case through the chosen LLM failure mode; errors become rows."""
@@ -220,7 +226,11 @@ def run_healthcare_batch(
         if on_case is not None:
             on_case(position, min(len(cases), BATCH_LIMIT), item)
         try:
-            if mode == "llm-context-loss":
+            if mode == "deterministic":
+                _, stale = allergy_finding(item.case)
+                run, records = simulate_healthcare_case(item.case, stale_allergy_view=stale)
+                llm = None
+            elif mode == "llm-context-loss":
                 run, records, llm = simulate_healthcare_case_llm(item.case, decision_config)
             else:
                 run, records, llm = simulate_healthcare_case_llm_pii(item.case, allergy_config)
@@ -228,13 +238,16 @@ def run_healthcare_batch(
                 definition, run, records, HEALTHCARE_RECORD_CODECS, HealthcareCorrectnessComponent(),
                 content_checker=content_checker,
             )
-            results.append(_summarize(item, governed, llm))
+            result = _summarize(item, governed, llm)
         except Exception as exc:  # one failed case must not abort the batch
-            results.append(BatchResult(
+            result = BatchResult(
                 row=item.row, patient_name=item.case.patient_name, medication=item.case.medication,
                 known_allergy=item.case.known_allergy, disposition=None, trace_check=None, nemo=None,
                 verdict=None, caught_by="-", error=f"{type(exc).__name__}: {exc}", case=item.case,
-            ))
+            )
+        results.append(result)
+        if on_result is not None:
+            on_result(position, result)
     return results
 
 

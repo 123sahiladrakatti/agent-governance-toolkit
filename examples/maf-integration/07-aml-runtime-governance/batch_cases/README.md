@@ -1,9 +1,21 @@
 # Backend batch cases
 
-`healthcare_cases.xlsx` is the sample batch for the healthcare demo. In the app, choose the
-Healthcare pipeline, load it, and use **Load & govern sample cases**. Every row runs through the
-chosen real-LLM failure mode and the same ingestion and governance path as the single-case form.
-There is no upload widget; the app reads this file from the repo.
+`healthcare_cases.xlsx` is the sample backend batch for the healthcare demo. The Streamlit process
+does not execute the batch. Run the worker independently; it validates every row, executes the
+client pipeline, applies governance, and commits each complete case to an indexed SQLite store:
+
+```bash
+python batch_worker.py --mode deterministic
+```
+
+For the real-LLM scenarios, use `--mode llm-context-loss` or `--mode llm-pii-leak`. Those jobs can
+take minutes, but the frontend remains fast because it only reads stored summaries and the selected
+case document. It also shows partial progress while a batch is still being committed.
+
+The persisted document contains the source records, normalized client payload, agent trace, AGT
+authorization decisions, NeMo checks, correctness attribution, final action decision, model data,
+and audit information. The frontend intentionally exposes only the operational summary and selected
+case attribution.
 
 Regenerate the file (byte-identical every time) with:
 
@@ -30,7 +42,8 @@ columns must be exactly these, in any order:
 | `coverage_authorized` | boolean | `TRUE` / `FALSE` (also yes/no, 1/0) |
 
 Fully empty rows are skipped. A malformed file is rejected with an error that names the row and
-column. At most 10 cases run per batch, because each real-LLM case takes 15-60 seconds.
+column. At most 10 cases run per batch in this reference adapter. Production adapters can page
+larger batches and use multiple workers while preserving the same result-store contract.
 
 ## Sample cases
 

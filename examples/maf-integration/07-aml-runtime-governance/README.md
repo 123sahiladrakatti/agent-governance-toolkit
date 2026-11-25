@@ -9,7 +9,7 @@ The two ingestion inputs are deliberately separate:
 
 The optional customer contract is `CorrectnessComponent.check(trace, records) -> CorrectnessResult`. When it is absent, generic provenance and conflict checks still run and the result explicitly says domain correctness was not configured. The reference implementations are `aml.correctness.AmlCorrectnessComponent` and `healthcare.correctness.HealthcareCorrectnessComponent`.
 
-The Streamlit demo lets a user choose an AML company pipeline or a healthcare company pipeline. That choice loads a different backend JSON definition, so the agents, topology, permissions, policies, records, simulator, and correctness plug-in change. A live case form supplies only domain case data. The generated run is attached to the chosen static definition, ingested through the same `client-pipeline/v1` contract, normalized, and governed. The client-facing frontend returns Continue, Human Review, or Block with a focused explanation. Normalized traces, resolver decisions, policy evidence, and audit proof remain backend-only in `GraphReview`.
+The Streamlit demo lets a user choose an AML company pipeline or a healthcare company pipeline. That choice loads a different backend JSON definition, so the agents, topology, permissions, policies, records, simulator, and correctness plug-in change. Case data is ingested batchwise by an independent backend worker. The worker normalizes and governs every case, then materializes complete results in SQLite. Streamlit performs indexed reads only, so the client-facing dashboard returns Continue, Human Review, or Block with focused attribution without waiting for agent or model execution. Normalized payloads, full traces, resolver decisions, policy evidence, model data, and audit proof stay in the backend result document.
 
 The healthcare reference shows cross-agent context loss: the allergy-safety agent can emit a current v2 contraindication while the care-decision agent consumes an older v1 no-contraindication result. The generic provenance/version checker detects the inconsistency and Action Governance requires human review. A safe medication/allergy combination passes. This is synthetic demonstration logic; real healthcare integrations would use the company's pipeline/log adapter, EHR/formulary records, clinical policies, model/prompts, and validated correctness component.
 
@@ -31,8 +31,13 @@ Domain-specific records, terminology, simulations, and correctness attribution r
 ```bash
 cd examples/maf-integration/07-aml-runtime-governance
 python3 -m pip install -r requirements.txt
+python3 batch_worker.py --mode deterministic
 python3 -m streamlit run app.py
 ```
+
+The batch worker is deliberately separate from Streamlit. Use `--mode llm-context-loss` or
+`--mode llm-pii-leak` for the slower real-model scenarios; committed cases become visible while the
+worker continues processing the rest of the batch.
 
 The "Real LLM (context-loss demo)" decision mode (AML and healthcare) reads optional local settings from a `.env` file in this folder (it is gitignored). The app re-reads it on every run, so edit a value and run the case again; a variable already set in your terminal takes precedence.
 
@@ -77,7 +82,10 @@ This live smoke check is separate from the mocked unit tests and may fail if the
 - `governance.py`: architecture-aligned deterministic top gate, NeMo middle-layer monitor, record-relative correctness checker, final AGT Action Governance, and bounded session metrics.
 - `nemo_guardrails.py`: lazy NeMo output-rail adapter with injectable config/model/prompts and verdict aggregation.
 - `agt_resolver.py`: generic governor/resolver orchestration with injected policies, system description, and optional correctness.
-- `app.py`: AML/healthcare reference selector and live case forms over the shared ingestion/governance simulator.
+- `batch_worker.py`: backend batch ingestion and governance process.
+- `batch_store.py`: incremental SQLite result contract between workers and the frontend.
+- `batch_dashboard.py`: fast, read-only client view over materialized batch results.
+- `app.py`: AML/healthcare reference selector and batch governance dashboard.
 - `test_aml_governance.py`: deterministic governance behavior tests.
 - `test_nemo_integration.py`: isolated adapter and Action Governance tests using mocked NeMo verdicts.
 - `test_generic_governance.py`: non-AML ingestion, permission, provenance, and governor tests.

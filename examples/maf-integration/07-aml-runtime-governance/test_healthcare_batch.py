@@ -148,6 +148,20 @@ class BatchRunTests(unittest.TestCase):
             self.assertIn("allergy-safety", result.caught_by)
         self.assertTrue(summary_line(results).startswith("5 cases run · 5 flagged · 0 clean"))
 
+    def test_deterministic_batch_runs_without_an_llm_and_streams_results(self):
+        streamed = []
+        with mock.patch.object(llm_decision, "_chat", side_effect=AssertionError("LLM must not be called")):
+            results = run_healthcare_batch(
+                self.cases,
+                "deterministic",
+                self.definition,
+                content_checker=no_pii_checker,
+                on_result=lambda position, result: streamed.append((position, result.patient_name)),
+            )
+        self.assertEqual(len(results), 5)
+        self.assertEqual(streamed, [(i, case.case.patient_name) for i, case in enumerate(self.cases, start=1)])
+        self.assertTrue(all(result.error is None for result in results))
+
     def test_pii_batch_is_caught_by_the_content_check(self):
         def chat(config, prompt, num_predict):
             leaky = "Pat Example" in prompt
@@ -193,7 +207,7 @@ class BatchRunTests(unittest.TestCase):
 
     def test_unknown_mode_is_rejected(self):
         with self.assertRaises(ValueError):
-            run_healthcare_batch(self.cases, "deterministic", self.definition)
+            run_healthcare_batch(self.cases, "unsupported", self.definition)
 
 
 if __name__ == "__main__":
